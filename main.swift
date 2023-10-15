@@ -1,17 +1,28 @@
 import Foundation
 
 // nix-shell --extra-experimental-features flakes -I nixpkgs=flake:github:nixos/nixpkgs/0218941ea68b4c625533bead7bbb94ccce52dceb -p swift 'linuxPackages_6_1.perf' flamegraph hyperfine
-// swiftc -g -O -Xcc -march=native -Xcc -mtune=native --enforce-exclusivity=none cliff_market.swift
-// sudo perf record -F 99 --call-graph dwarf -- ./cliff_market ANON2.csv
-// sudo perf script > out.perf; stackcollapse-perf.pl out.perf | swift demangle > out.folded; flamegraph.pl out.folded > out.svg
+// swiftc -g -O -Xcc -march=native -Xcc -mtune=native --enforce-exclusivity=none FileHandle2.swift main.swift
+// hyperfine --warmup 2 --export-markdown ./timing.md './main ANON2.csv'
+// sudo perf record -F 99 --call-graph dwarf -- ./main ANON2.csv
+// sudo perf script > out.perf; stackcollapse-perf.pl out.perf | swift demangle > out.folded; flamegraph.pl out.folded > profile.svg
 
-// swiftc -emit-ir -g -O -module-name "x" --enforce-exclusivity=none cliff_market.swift > cliff_market.ll
-// cat cliff_market.ll | swift demangle > cliff_market_demangled.ll
+// swiftc -emit-ir -g -O -module-name "x" --enforce-exclusivity=none main.swift > main.ll
+// cat main.ll | swift demangle > main_demangled.ll
+
+extension FileHandle2 {
+  func readSlice(into slice: inout ArraySlice<UInt8>) throws -> Int {
+    let length = slice.count
+    return try slice.withUnsafeMutableBufferPointer { (ptr : inout UnsafeMutableBufferPointer<UInt8>) throws -> Int in
+      let buffer = ptr.baseAddress!
+      return try self._readBytes(into: buffer, length: length)
+    }
+  }
+}
 
 private enum State {
-    case EOF
-    case Line
-    case Normal
+  case EOF
+  case Line
+  case Normal
 }
 
 private struct Product {
@@ -39,7 +50,7 @@ let chunkSize: Int = 32*1024
 
 private func main() {
   var myDictionary = [String: Product]()
-  let fileHandle = FileHandle(forReadingAtPath: CommandLine.arguments[1])!
+  let fileHandle = FileHandle2(forReadingAtPath: CommandLine.arguments[1])!
   var data = try! [UInt8](fileHandle.read(upToCount: chunkSize)!)
   let eol_idx = data.firstIndex(of: newline)!
   let headers = data[0..<eol_idx].split(separator: comma, omittingEmptySubsequences: false)
@@ -177,4 +188,5 @@ splitCells (x:xs) = case splitCells xs of r:rs -> (x:r) : rs
       Double(prod.tot_qty) / Double(prod.cnt)))
   }
 }
+
 main()

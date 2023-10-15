@@ -1,0 +1,2561 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="646" onload="init(evt)" viewBox="0 0 1200 646" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="646.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="629" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="629" > </text>
+<g id="frames">
+<g >
+<title>__memcpy_sse2_unaligned (1 samples, 0.04%)</title><rect x="640.1" y="373" width="0.5" height="15.0" fill="rgb(253,74,39)" rx="2" ry="2" />
+<text  x="643.11" y="383.5" ></text>
+</g>
+<g >
+<title>swift_release (1 samples, 0.04%)</title><rect x="610.7" y="453" width="0.5" height="15.0" fill="rgb(229,127,37)" rx="2" ry="2" />
+<text  x="613.66" y="463.5" ></text>
+</g>
+<g >
+<title>perf_event_exec (5 samples, 0.22%)</title><rect x="1187.5" y="453" width="2.5" height="15.0" fill="rgb(226,160,7)" rx="2" ry="2" />
+<text  x="1190.46" y="463.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (1 samples, 0.04%)</title><rect x="1097.1" y="341" width="0.5" height="15.0" fill="rgb(245,112,21)" rx="2" ry="2" />
+<text  x="1100.08" y="351.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8, Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Swift.Array.init&lt;A where A == A1.Element, A1: Swift.Sequence&gt;(A1) -&gt; [A] (1 samples, 0.04%)</title><rect x="1183.9" y="549" width="0.5" height="15.0" fill="rgb(223,113,42)" rx="2" ry="2" />
+<text  x="1186.91" y="559.5" ></text>
+</g>
+<g >
+<title>__realloc (26 samples, 1.12%)</title><rect x="968.6" y="437" width="13.2" height="15.0" fill="rgb(224,138,40)" rx="2" ry="2" />
+<text  x="971.62" y="447.5" ></text>
+</g>
+<g >
+<title>blk_mq_flush_plug_list (9 samples, 0.39%)</title><rect x="947.8" y="261" width="4.6" height="15.0" fill="rgb(234,172,5)" rx="2" ry="2" />
+<text  x="950.81" y="271.5" ></text>
+</g>
+<g >
+<title>list_lru_del (1 samples, 0.04%)</title><rect x="935.6" y="245" width="0.5" height="15.0" fill="rgb(239,104,11)" rx="2" ry="2" />
+<text  x="938.62" y="255.5" ></text>
+</g>
+<g >
+<title>drm_update_vblank_count (1 samples, 0.04%)</title><rect x="1095.6" y="261" width="0.5" height="15.0" fill="rgb(215,42,20)" rx="2" ry="2" />
+<text  x="1098.56" y="271.5" ></text>
+</g>
+<g >
+<title>__dma_map_sg_attrs (1 samples, 0.04%)</title><rect x="951.4" y="69" width="0.5" height="15.0" fill="rgb(206,182,25)" rx="2" ry="2" />
+<text  x="954.36" y="79.5" ></text>
+</g>
+<g >
+<title>task_tick_fair (1 samples, 0.04%)</title><rect x="1171.2" y="325" width="0.5" height="15.0" fill="rgb(246,104,23)" rx="2" ry="2" />
+<text  x="1174.21" y="335.5" ></text>
+</g>
+<g >
+<title>Swift.withUnsafeBytes&lt;A, B&gt;(of: A, _: (Swift.UnsafeRawBufferPointer) throws -&gt; B) throws -&gt; B (20 samples, 0.86%)</title><rect x="572.1" y="437" width="10.1" height="15.0" fill="rgb(243,20,51)" rx="2" ry="2" />
+<text  x="575.07" y="447.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (2 samples, 0.09%)</title><rect x="1170.7" y="421" width="1.0" height="15.0" fill="rgb(237,59,44)" rx="2" ry="2" />
+<text  x="1173.71" y="431.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateConcreteTypeFromMangledName (1 samples, 0.04%)</title><rect x="645.2" y="405" width="0.5" height="15.0" fill="rgb(252,2,47)" rx="2" ry="2" />
+<text  x="648.19" y="415.5" ></text>
+</g>
+<g >
+<title>dm_write_reg_func (1 samples, 0.04%)</title><rect x="583.8" y="309" width="0.5" height="15.0" fill="rgb(220,8,46)" rx="2" ry="2" />
+<text  x="586.75" y="319.5" ></text>
+</g>
+<g >
+<title>partial apply forwarder for closure #1 (Swift.UnsafeRawBufferPointer) throws -&gt; A in Foundation.Data.InlineData.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (19 samples, 0.82%)</title><rect x="572.6" y="421" width="9.6" height="15.0" fill="rgb(236,147,9)" rx="2" ry="2" />
+<text  x="575.58" y="431.5" ></text>
+</g>
+<g >
+<title>__radix_tree_lookup (1 samples, 0.04%)</title><rect x="953.9" y="229" width="0.5" height="15.0" fill="rgb(254,100,7)" rx="2" ry="2" />
+<text  x="956.90" y="239.5" ></text>
+</g>
+<g >
+<title>swift_arrayDestroy (1 samples, 0.04%)</title><rect x="1185.9" y="533" width="0.5" height="15.0" fill="rgb(207,20,31)" rx="2" ry="2" />
+<text  x="1188.94" y="543.5" ></text>
+</g>
+<g >
+<title>filemap_add_folio (42 samples, 1.81%)</title><rect x="922.4" y="309" width="21.3" height="15.0" fill="rgb(224,177,28)" rx="2" ry="2" />
+<text  x="925.42" y="319.5" >f..</text>
+</g>
+<g >
+<title>sg_next (1 samples, 0.04%)</title><rect x="951.4" y="37" width="0.5" height="15.0" fill="rgb(248,66,13)" rx="2" ry="2" />
+<text  x="954.36" y="47.5" ></text>
+</g>
+<g >
+<title>touch_atime (4 samples, 0.17%)</title><rect x="962.0" y="341" width="2.1" height="15.0" fill="rgb(227,62,42)" rx="2" ry="2" />
+<text  x="965.02" y="351.5" ></text>
+</g>
+<g >
+<title>ata_qc_issue (1 samples, 0.04%)</title><rect x="951.4" y="101" width="0.5" height="15.0" fill="rgb(247,174,3)" rx="2" ry="2" />
+<text  x="954.36" y="111.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (2 samples, 0.09%)</title><rect x="1095.6" y="469" width="1.0" height="15.0" fill="rgb(250,128,32)" rx="2" ry="2" />
+<text  x="1098.56" y="479.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (1 samples, 0.04%)</title><rect x="1183.4" y="517" width="0.5" height="15.0" fill="rgb(222,125,49)" rx="2" ry="2" />
+<text  x="1186.40" y="527.5" ></text>
+</g>
+<g >
+<title>dma_direct_map_sg (1 samples, 0.04%)</title><rect x="951.4" y="53" width="0.5" height="15.0" fill="rgb(238,145,31)" rx="2" ry="2" />
+<text  x="954.36" y="63.5" ></text>
+</g>
+<g >
+<title>swift_deallocObject (5 samples, 0.22%)</title><rect x="1011.8" y="453" width="2.5" height="15.0" fill="rgb(211,169,8)" rx="2" ry="2" />
+<text  x="1014.78" y="463.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (2 samples, 0.09%)</title><rect x="1097.1" y="405" width="1.0" height="15.0" fill="rgb(229,223,30)" rx="2" ry="2" />
+<text  x="1100.08" y="415.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (4 samples, 0.17%)</title><rect x="584.3" y="437" width="2.0" height="15.0" fill="rgb(207,74,8)" rx="2" ry="2" />
+<text  x="587.26" y="447.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (233 samples, 10.03%)</title><rect x="849.3" y="405" width="118.3" height="15.0" fill="rgb(233,184,22)" rx="2" ry="2" />
+<text  x="852.30" y="415.5" >do_syscall_64</text>
+</g>
+<g >
+<title>static Swift.String.== infix(Swift.String, Swift.String) -&gt; Swift.Bool (1 samples, 0.04%)</title><rect x="843.7" y="421" width="0.5" height="15.0" fill="rgb(242,43,2)" rx="2" ry="2" />
+<text  x="846.72" y="431.5" ></text>
+</g>
+<g >
+<title>amdgpu_irq_dispatch (1 samples, 0.04%)</title><rect x="1095.6" y="341" width="0.5" height="15.0" fill="rgb(245,178,40)" rx="2" ry="2" />
+<text  x="1098.56" y="351.5" ></text>
+</g>
+<g >
+<title>filemap_get_read_batch (10 samples, 0.43%)</title><rect x="908.2" y="325" width="5.1" height="15.0" fill="rgb(222,54,52)" rx="2" ry="2" />
+<text  x="911.20" y="335.5" ></text>
+</g>
+<g >
+<title>bio_associate_blkg (2 samples, 0.09%)</title><rect x="953.4" y="261" width="1.0" height="15.0" fill="rgb(243,107,11)" rx="2" ry="2" />
+<text  x="956.39" y="271.5" ></text>
+</g>
+<g >
+<title>blk_cgroup_congested (1 samples, 0.04%)</title><rect x="921.9" y="309" width="0.5" height="15.0" fill="rgb(221,150,14)" rx="2" ry="2" />
+<text  x="924.91" y="319.5" ></text>
+</g>
+<g >
+<title>swift_bridgeObjectRetain (1 samples, 0.04%)</title><rect x="1021.4" y="485" width="0.5" height="15.0" fill="rgb(223,114,23)" rx="2" ry="2" />
+<text  x="1024.43" y="495.5" ></text>
+</g>
+<g >
+<title>xas_descend (2 samples, 0.09%)</title><rect x="912.3" y="293" width="1.0" height="15.0" fill="rgb(228,151,44)" rx="2" ry="2" />
+<text  x="915.26" y="303.5" ></text>
+</g>
+<g >
+<title>xas_load (2 samples, 0.09%)</title><rect x="912.3" y="309" width="1.0" height="15.0" fill="rgb(208,161,39)" rx="2" ry="2" />
+<text  x="915.26" y="319.5" ></text>
+</g>
+<g >
+<title>_int_free (6 samples, 0.26%)</title><rect x="605.1" y="405" width="3.0" height="15.0" fill="rgb(228,216,29)" rx="2" ry="2" />
+<text  x="608.08" y="415.5" ></text>
+</g>
+<g >
+<title>Swift.withUnsafeBytes&lt;A, B&gt;(of: A, _: (Swift.UnsafeRawBufferPointer) throws -&gt; B) throws -&gt; B (1 samples, 0.04%)</title><rect x="1181.4" y="501" width="0.5" height="15.0" fill="rgb(239,183,0)" rx="2" ry="2" />
+<text  x="1184.37" y="511.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.04%)</title><rect x="981.3" y="405" width="0.5" height="15.0" fill="rgb(238,69,43)" rx="2" ry="2" />
+<text  x="984.32" y="415.5" ></text>
+</g>
+<g >
+<title>swift_beginAccess (1 samples, 0.04%)</title><rect x="639.1" y="437" width="0.5" height="15.0" fill="rgb(232,210,45)" rx="2" ry="2" />
+<text  x="642.10" y="447.5" ></text>
+</g>
+<g >
+<title>dd_insert_requests (1 samples, 0.04%)</title><rect x="951.9" y="229" width="0.5" height="15.0" fill="rgb(218,65,2)" rx="2" ry="2" />
+<text  x="954.87" y="239.5" ></text>
+</g>
+<g >
+<title>main (4 samples, 0.17%)</title><rect x="10.0" y="549" width="2.0" height="15.0" fill="rgb(219,122,12)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" ></text>
+</g>
+<g >
+<title>current_time (1 samples, 0.04%)</title><rect x="963.5" y="309" width="0.6" height="15.0" fill="rgb(239,145,5)" rx="2" ry="2" />
+<text  x="966.55" y="319.5" ></text>
+</g>
+<g >
+<title>__libc_read (242 samples, 10.41%)</title><rect x="845.2" y="437" width="122.9" height="15.0" fill="rgb(228,145,22)" rx="2" ry="2" />
+<text  x="848.24" y="447.5" >__libc_read</text>
+</g>
+<g >
+<title>__common_interrupt (1 samples, 0.04%)</title><rect x="907.2" y="261" width="0.5" height="15.0" fill="rgb(233,123,32)" rx="2" ry="2" />
+<text  x="910.19" y="271.5" ></text>
+</g>
+<g >
+<title>getCache (1 samples, 0.04%)</title><rect x="14.1" y="501" width="0.5" height="15.0" fill="rgb(223,42,13)" rx="2" ry="2" />
+<text  x="17.06" y="511.5" ></text>
+</g>
+<g >
+<title>__perf_event_task_sched_in (15 samples, 0.65%)</title><rect x="913.8" y="245" width="7.6" height="15.0" fill="rgb(224,183,12)" rx="2" ry="2" />
+<text  x="916.79" y="255.5" ></text>
+</g>
+<g >
+<title>common_interrupt (2 samples, 0.09%)</title><rect x="1095.6" y="453" width="1.0" height="15.0" fill="rgb(253,9,10)" rx="2" ry="2" />
+<text  x="1098.56" y="463.5" ></text>
+</g>
+<g >
+<title>swift::runtime::SwiftTLSContext::get (1 samples, 0.04%)</title><rect x="639.1" y="421" width="0.5" height="15.0" fill="rgb(224,11,54)" rx="2" ry="2" />
+<text  x="642.10" y="431.5" ></text>
+</g>
+<g >
+<title>vfs_read (227 samples, 9.77%)</title><rect x="850.8" y="373" width="115.3" height="15.0" fill="rgb(254,99,14)" rx="2" ry="2" />
+<text  x="853.83" y="383.5" >vfs_read</text>
+</g>
+<g >
+<title>swift_isUniquelyReferenced_nonNull_native (1 samples, 0.04%)</title><rect x="618.3" y="469" width="0.5" height="15.0" fill="rgb(219,29,4)" rx="2" ry="2" />
+<text  x="621.28" y="479.5" ></text>
+</g>
+<g >
+<title>Swift.Hasher._finalize() -&gt; Swift.Int (3 samples, 0.13%)</title><rect x="615.7" y="421" width="1.6" height="15.0" fill="rgb(238,137,32)" rx="2" ry="2" />
+<text  x="618.74" y="431.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (1 samples, 0.04%)</title><rect x="937.7" y="181" width="0.5" height="15.0" fill="rgb(254,113,27)" rx="2" ry="2" />
+<text  x="940.65" y="191.5" ></text>
+</g>
+<g >
+<title>blk_complete_reqs (1 samples, 0.04%)</title><rect x="1096.1" y="405" width="0.5" height="15.0" fill="rgb(212,82,32)" rx="2" ry="2" />
+<text  x="1099.07" y="415.5" ></text>
+</g>
+<g >
+<title>[[stack]] (3 samples, 0.13%)</title><rect x="12.0" y="565" width="1.6" height="15.0" fill="rgb(241,2,24)" rx="2" ry="2" />
+<text  x="15.03" y="575.5" ></text>
+</g>
+<g >
+<title>__x86_indirect_thunk_rax (1 samples, 0.04%)</title><rect x="847.8" y="405" width="0.5" height="15.0" fill="rgb(249,27,47)" rx="2" ry="2" />
+<text  x="850.78" y="415.5" ></text>
+</g>
+<g >
+<title>bprm_execve (5 samples, 0.22%)</title><rect x="1187.5" y="501" width="2.5" height="15.0" fill="rgb(233,7,8)" rx="2" ry="2" />
+<text  x="1190.46" y="511.5" ></text>
+</g>
+<g >
+<title>destroy value witness for Swift.Optional (1 samples, 0.04%)</title><rect x="1179.3" y="565" width="0.5" height="15.0" fill="rgb(246,15,6)" rx="2" ry="2" />
+<text  x="1182.34" y="575.5" ></text>
+</g>
+<g >
+<title>update_process_times (2 samples, 0.09%)</title><rect x="1097.1" y="357" width="1.0" height="15.0" fill="rgb(247,184,47)" rx="2" ry="2" />
+<text  x="1100.08" y="367.5" ></text>
+</g>
+<g >
+<title>blake2s_update (1 samples, 0.04%)</title><rect x="853.9" y="213" width="0.5" height="15.0" fill="rgb(253,64,30)" rx="2" ry="2" />
+<text  x="856.87" y="223.5" ></text>
+</g>
+<g >
+<title>Foundation.Data._Representation.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (1 samples, 0.04%)</title><rect x="1181.4" y="517" width="0.5" height="15.0" fill="rgb(249,157,21)" rx="2" ry="2" />
+<text  x="1184.37" y="527.5" ></text>
+</g>
+<g >
+<title>handle_edge_irq (1 samples, 0.04%)</title><rect x="583.8" y="437" width="0.5" height="15.0" fill="rgb(229,80,26)" rx="2" ry="2" />
+<text  x="586.75" y="447.5" ></text>
+</g>
+<g >
+<title>amdgpu_ih_process (1 samples, 0.04%)</title><rect x="583.8" y="373" width="0.5" height="15.0" fill="rgb(207,30,32)" rx="2" ry="2" />
+<text  x="586.75" y="383.5" ></text>
+</g>
+<g >
+<title>_CFReallocf (27 samples, 1.16%)</title><rect x="968.1" y="453" width="13.7" height="15.0" fill="rgb(250,123,31)" rx="2" ry="2" />
+<text  x="971.12" y="463.5" ></text>
+</g>
+<g >
+<title>selinux_file_permission (1 samples, 0.04%)</title><rect x="965.6" y="341" width="0.5" height="15.0" fill="rgb(234,171,52)" rx="2" ry="2" />
+<text  x="968.58" y="351.5" ></text>
+</g>
+<g >
+<title>x86_pmu_enable_event (5 samples, 0.22%)</title><rect x="1187.5" y="421" width="2.5" height="15.0" fill="rgb(211,180,25)" rx="2" ry="2" />
+<text  x="1190.46" y="431.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[1] = Dead&gt; of generic specialization &lt;Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Foundation.Data.init&lt;A where A: Swift.Sequence, A.Element == Swift.UInt8&gt;(A) -&gt; Foundation.Data (4 samples, 0.17%)</title><rect x="1181.9" y="533" width="2.0" height="15.0" fill="rgb(228,112,8)" rx="2" ry="2" />
+<text  x="1184.88" y="543.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (1 samples, 0.04%)</title><rect x="1184.4" y="533" width="0.5" height="15.0" fill="rgb(249,25,51)" rx="2" ry="2" />
+<text  x="1187.41" y="543.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String, main.(Product in _12232F587A4C5CD8B1EEDF696793A4FC)&gt; of Swift.Dictionary.subscript.setter : (A) -&gt; B? (7 samples, 0.30%)</title><rect x="615.2" y="485" width="3.6" height="15.0" fill="rgb(247,60,33)" rx="2" ry="2" />
+<text  x="618.23" y="495.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="1181.4" y="437" width="0.5" height="15.0" fill="rgb(229,124,46)" rx="2" ry="2" />
+<text  x="1184.37" y="447.5" ></text>
+</g>
+<g >
+<title>amdgpu_irq_handler (1 samples, 0.04%)</title><rect x="583.8" y="389" width="0.5" height="15.0" fill="rgb(223,62,37)" rx="2" ry="2" />
+<text  x="586.75" y="399.5" ></text>
+</g>
+<g >
+<title>all (2,324 samples, 100%)</title><rect x="10.0" y="597" width="1180.0" height="15.0" fill="rgb(212,202,20)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" ></text>
+</g>
+<g >
+<title>perf_event_task_tick (1 samples, 0.04%)</title><rect x="585.8" y="341" width="0.5" height="15.0" fill="rgb(242,119,54)" rx="2" ry="2" />
+<text  x="588.78" y="351.5" ></text>
+</g>
+<g >
+<title>handle_irq_event (1 samples, 0.04%)</title><rect x="1095.6" y="405" width="0.5" height="15.0" fill="rgb(217,107,41)" rx="2" ry="2" />
+<text  x="1098.56" y="415.5" ></text>
+</g>
+<g >
+<title>__check_object_size (1 samples, 0.04%)</title><rect x="984.4" y="341" width="0.5" height="15.0" fill="rgb(206,105,24)" rx="2" ry="2" />
+<text  x="987.36" y="351.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (1 samples, 0.04%)</title><rect x="1170.7" y="389" width="0.5" height="15.0" fill="rgb(245,212,27)" rx="2" ry="2" />
+<text  x="1173.71" y="399.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1 samples, 0.04%)</title><rect x="853.9" y="293" width="0.5" height="15.0" fill="rgb(230,133,47)" rx="2" ry="2" />
+<text  x="856.87" y="303.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (4 samples, 0.17%)</title><rect x="584.3" y="421" width="2.0" height="15.0" fill="rgb(205,12,42)" rx="2" ry="2" />
+<text  x="587.26" y="431.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[0] = Exploded, Arg[1] = Exploded, Arg[2] = Dead&gt; of generic specialization &lt;Swift.UInt8&gt; of static (extension in Swift):Swift.ArraySlice&lt;A where A: Swift.Equatable&gt;.== infix(Swift.ArraySlice&lt;A&gt;, Swift.ArraySlice&lt;A&gt;) -&gt; Swift.Bool (4 samples, 0.17%)</title><rect x="833.1" y="469" width="2.0" height="15.0" fill="rgb(247,25,3)" rx="2" ry="2" />
+<text  x="836.06" y="479.5" ></text>
+</g>
+<g >
+<title>blk_mq_dispatch_rq_list (6 samples, 0.26%)</title><rect x="948.8" y="165" width="3.1" height="15.0" fill="rgb(216,218,25)" rx="2" ry="2" />
+<text  x="951.82" y="175.5" ></text>
+</g>
+<g >
+<title>merged outlined destroy of Foundation.NSCopying? (1 samples, 0.04%)</title><rect x="1186.4" y="565" width="0.6" height="15.0" fill="rgb(244,81,25)" rx="2" ry="2" />
+<text  x="1189.45" y="575.5" ></text>
+</g>
+<g >
+<title>Foundation.__DataStorage.__deallocating_deinit (1 samples, 0.04%)</title><rect x="639.6" y="437" width="0.5" height="15.0" fill="rgb(236,90,14)" rx="2" ry="2" />
+<text  x="642.60" y="447.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[2] = [Constant Propagated Function : closure #1 (Swift.UnsafeRawBufferPointer) -&gt; Swift.Optional&lt;Swift.String&gt; in (extension in Foundation):Swift.String.init(data: __shared Foundation.Data, encoding: (extension in Foundation):Swift.String.Encoding) -&gt; Swift.Optional&lt;Swift.String&gt;]&gt; of reabstraction thunk helper from @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@owned Swift.String?, @error @owned Swift.Error) to @escaping @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@out Swift.String?, @error @owned Swift.Error) (19 samples, 0.82%)</title><rect x="572.6" y="405" width="9.6" height="15.0" fill="rgb(248,9,33)" rx="2" ry="2" />
+<text  x="575.58" y="415.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (1 samples, 0.04%)</title><rect x="1096.6" y="389" width="0.5" height="15.0" fill="rgb(239,172,36)" rx="2" ry="2" />
+<text  x="1099.57" y="399.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (4 samples, 0.17%)</title><rect x="584.3" y="485" width="2.0" height="15.0" fill="rgb(249,55,35)" rx="2" ry="2" />
+<text  x="587.26" y="495.5" ></text>
+</g>
+<g >
+<title>common_interrupt (1 samples, 0.04%)</title><rect x="1170.2" y="453" width="0.5" height="15.0" fill="rgb(236,79,14)" rx="2" ry="2" />
+<text  x="1173.20" y="463.5" ></text>
+</g>
+<g >
+<title>xa_get_order (7 samples, 0.30%)</title><rect x="930.5" y="277" width="3.6" height="15.0" fill="rgb(211,163,41)" rx="2" ry="2" />
+<text  x="933.54" y="287.5" ></text>
+</g>
+<g >
+<title>__entry_text_start (1 samples, 0.04%)</title><rect x="844.7" y="421" width="0.5" height="15.0" fill="rgb(229,190,43)" rx="2" ry="2" />
+<text  x="847.73" y="431.5" ></text>
+</g>
+<g >
+<title>bpf_lsm_file_permission (1 samples, 0.04%)</title><rect x="847.8" y="421" width="0.5" height="15.0" fill="rgb(211,225,40)" rx="2" ry="2" />
+<text  x="850.78" y="431.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1 samples, 0.04%)</title><rect x="1096.1" y="421" width="0.5" height="15.0" fill="rgb(225,145,34)" rx="2" ry="2" />
+<text  x="1099.07" y="431.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (1 samples, 0.04%)</title><rect x="937.7" y="149" width="0.5" height="15.0" fill="rgb(222,189,32)" rx="2" ry="2" />
+<text  x="940.65" y="159.5" ></text>
+</g>
+<g >
+<title>_int_realloc (25 samples, 1.08%)</title><rect x="969.1" y="421" width="12.7" height="15.0" fill="rgb(213,186,18)" rx="2" ry="2" />
+<text  x="972.13" y="431.5" ></text>
+</g>
+<g >
+<title>read_tsc (1 samples, 0.04%)</title><rect x="585.3" y="341" width="0.5" height="15.0" fill="rgb(251,177,24)" rx="2" ry="2" />
+<text  x="588.28" y="351.5" ></text>
+</g>
+<g >
+<title>path_init (1 samples, 0.04%)</title><rect x="986.4" y="325" width="0.5" height="15.0" fill="rgb(208,117,29)" rx="2" ry="2" />
+<text  x="989.39" y="335.5" ></text>
+</g>
+<g >
+<title>__handle_irq_event_percpu (1 samples, 0.04%)</title><rect x="583.8" y="405" width="0.5" height="15.0" fill="rgb(251,79,32)" rx="2" ry="2" />
+<text  x="586.75" y="415.5" ></text>
+</g>
+<g >
+<title>preempt_count_add (1 samples, 0.04%)</title><rect x="945.3" y="261" width="0.5" height="15.0" fill="rgb(235,200,47)" rx="2" ry="2" />
+<text  x="948.27" y="271.5" ></text>
+</g>
+<g >
+<title>initializeWithCopy value witness for Swift.ClosedRange (1 samples, 0.04%)</title><rect x="638.6" y="405" width="0.5" height="15.0" fill="rgb(246,79,36)" rx="2" ry="2" />
+<text  x="641.59" y="415.5" ></text>
+</g>
+<g >
+<title>dget_parent (2 samples, 0.09%)</title><rect x="854.4" y="341" width="1.0" height="15.0" fill="rgb(251,160,26)" rx="2" ry="2" />
+<text  x="857.38" y="351.5" ></text>
+</g>
+<g >
+<title>merged generic specialization &lt;Swift._Stdout&gt; of Swift._print&lt;A where A: Swift.TextOutputStream&gt;(_: [Any], separator: Swift.String, terminator: Swift.String, to: inout A) -&gt; () (1 samples, 0.04%)</title><rect x="991.0" y="469" width="0.5" height="15.0" fill="rgb(212,55,11)" rx="2" ry="2" />
+<text  x="993.96" y="479.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (2 samples, 0.09%)</title><rect x="1097.1" y="373" width="1.0" height="15.0" fill="rgb(246,208,2)" rx="2" ry="2" />
+<text  x="1100.08" y="383.5" ></text>
+</g>
+<g >
+<title>scsi_end_request (1 samples, 0.04%)</title><rect x="1096.1" y="373" width="0.5" height="15.0" fill="rgb(208,80,7)" rx="2" ry="2" />
+<text  x="1099.07" y="383.5" ></text>
+</g>
+<g >
+<title>protocol witness for Swift.FixedWidthInteger.addingReportingOverflow(A) -&gt; (partialValue: A, overflow: Swift.Bool) in conformance Swift.Int : Swift.FixedWidthInteger in Swift (1 samples, 0.04%)</title><rect x="612.7" y="421" width="0.5" height="15.0" fill="rgb(233,142,6)" rx="2" ry="2" />
+<text  x="615.69" y="431.5" ></text>
+</g>
+<g >
+<title>swift_bridgeObjectRelease (12 samples, 0.52%)</title><rect x="1014.3" y="485" width="6.1" height="15.0" fill="rgb(218,54,12)" rx="2" ry="2" />
+<text  x="1017.32" y="495.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (1 samples, 0.04%)</title><rect x="937.7" y="117" width="0.5" height="15.0" fill="rgb(232,72,44)" rx="2" ry="2" />
+<text  x="940.65" y="127.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="937.7" y="229" width="0.5" height="15.0" fill="rgb(207,204,25)" rx="2" ry="2" />
+<text  x="940.65" y="239.5" ></text>
+</g>
+<g >
+<title>__slab_alloc.constprop.0 (1 samples, 0.04%)</title><rect x="954.4" y="229" width="0.5" height="15.0" fill="rgb(208,33,41)" rx="2" ry="2" />
+<text  x="957.41" y="239.5" ></text>
+</g>
+<g >
+<title>dal_irq_service_ack (1 samples, 0.04%)</title><rect x="583.8" y="325" width="0.5" height="15.0" fill="rgb(238,157,16)" rx="2" ry="2" />
+<text  x="586.75" y="335.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (5 samples, 0.22%)</title><rect x="1187.5" y="565" width="2.5" height="15.0" fill="rgb(214,53,10)" rx="2" ry="2" />
+<text  x="1190.46" y="575.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of static (extension in Swift):Swift.ArraySlice&lt;A where A: Swift.Equatable&gt;.== infix(Swift.ArraySlice&lt;A&gt;, Swift.ArraySlice&lt;A&gt;) -&gt; Swift.Bool (4 samples, 0.17%)</title><rect x="833.1" y="485" width="2.0" height="15.0" fill="rgb(206,93,52)" rx="2" ry="2" />
+<text  x="836.06" y="495.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (4 samples, 0.17%)</title><rect x="584.3" y="405" width="2.0" height="15.0" fill="rgb(213,66,51)" rx="2" ry="2" />
+<text  x="587.26" y="415.5" ></text>
+</g>
+<g >
+<title>qh_completions (1 samples, 0.04%)</title><rect x="1170.2" y="325" width="0.5" height="15.0" fill="rgb(212,31,38)" rx="2" ry="2" />
+<text  x="1173.20" y="335.5" ></text>
+</g>
+<g >
+<title>__blk_mq_run_hw_queue (8 samples, 0.34%)</title><rect x="947.8" y="229" width="4.1" height="15.0" fill="rgb(232,82,31)" rx="2" ry="2" />
+<text  x="950.81" y="239.5" ></text>
+</g>
+<g >
+<title>unlink_chunk.isra.2 (2 samples, 0.09%)</title><rect x="1010.3" y="421" width="1.0" height="15.0" fill="rgb(205,138,7)" rx="2" ry="2" />
+<text  x="1013.26" y="431.5" ></text>
+</g>
+<g >
+<title>copy_user_generic_string (88 samples, 3.79%)</title><rect x="863.0" y="309" width="44.7" height="15.0" fill="rgb(232,195,40)" rx="2" ry="2" />
+<text  x="866.01" y="319.5" >copy..</text>
+</g>
+<g >
+<title>xas_find_conflict (2 samples, 0.09%)</title><rect x="934.1" y="277" width="1.0" height="15.0" fill="rgb(211,126,29)" rx="2" ry="2" />
+<text  x="937.10" y="287.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateConcreteTypeFromMangledName (1 samples, 0.04%)</title><rect x="614.7" y="469" width="0.5" height="15.0" fill="rgb(217,78,45)" rx="2" ry="2" />
+<text  x="617.72" y="479.5" ></text>
+</g>
+<g >
+<title>smp_call_function_single_async (1 samples, 0.04%)</title><rect x="1097.6" y="341" width="0.5" height="15.0" fill="rgb(250,45,17)" rx="2" ry="2" />
+<text  x="1100.59" y="351.5" ></text>
+</g>
+<g >
+<title>bio_associate_blkg_from_css (1 samples, 0.04%)</title><rect x="953.9" y="245" width="0.5" height="15.0" fill="rgb(216,121,22)" rx="2" ry="2" />
+<text  x="956.90" y="255.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="967.1" y="341" width="0.5" height="15.0" fill="rgb(225,67,0)" rx="2" ry="2" />
+<text  x="970.10" y="351.5" ></text>
+</g>
+<g >
+<title>_int_malloc (2 samples, 0.09%)</title><rect x="981.8" y="437" width="1.0" height="15.0" fill="rgb(224,201,13)" rx="2" ry="2" />
+<text  x="984.82" y="447.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[3] = Owned To Guaranteed&gt; of Foundation.__DataStorage.init(bytes: Swift.UnsafeMutableRawPointer?, length: Swift.Int, copy: Swift.Bool, deallocator: ((Swift.UnsafeMutableRawPointer, Swift.Int) -&gt; ())?, offset: Swift.Int) -&gt; Foundation.__DataStorage (2 samples, 0.09%)</title><rect x="989.4" y="421" width="1.1" height="15.0" fill="rgb(240,22,37)" rx="2" ry="2" />
+<text  x="992.44" y="431.5" ></text>
+</g>
+<g >
+<title>reabstraction thunk helper from @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@error @owned Swift.Error) to @escaping @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@out (), @error @owned Swift.Error)partial apply forwarder with unmangled suffix &quot;.1&quot; (2 samples, 0.09%)</title><rect x="636.6" y="341" width="1.0" height="15.0" fill="rgb(237,99,13)" rx="2" ry="2" />
+<text  x="639.56" y="351.5" ></text>
+</g>
+<g >
+<title>generic_fillattr (1 samples, 0.04%)</title><rect x="985.9" y="325" width="0.5" height="15.0" fill="rgb(237,158,18)" rx="2" ry="2" />
+<text  x="988.89" y="335.5" ></text>
+</g>
+<g >
+<title>scsi_io_completion (1 samples, 0.04%)</title><rect x="1096.1" y="389" width="0.5" height="15.0" fill="rgb(234,45,14)" rx="2" ry="2" />
+<text  x="1099.07" y="399.5" ></text>
+</g>
+<g >
+<title>swift::RefCounts&lt;swift::RefCountBitsT&lt; (3 samples, 0.13%)</title><rect x="1181.9" y="517" width="1.5" height="15.0" fill="rgb(223,222,52)" rx="2" ry="2" />
+<text  x="1184.88" y="527.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="967.1" y="325" width="0.5" height="15.0" fill="rgb(254,127,50)" rx="2" ry="2" />
+<text  x="970.10" y="335.5" ></text>
+</g>
+<g >
+<title>protocol witness for Swift.Sequence._copyContents(initializing: Swift.UnsafeMutableBufferPointer&lt;A.Element&gt;) -&gt; (A.Iterator, Swift.Int) in conformance Foundation.Data : Swift.Sequence in Foundation (39 samples, 1.68%)</title><rect x="619.8" y="469" width="19.8" height="15.0" fill="rgb(252,50,44)" rx="2" ry="2" />
+<text  x="622.80" y="479.5" ></text>
+</g>
+<g >
+<title>Swift.UnsafeRawBufferPointer.count.getter : Swift.Int (4 samples, 0.17%)</title><rect x="593.9" y="357" width="2.0" height="15.0" fill="rgb(209,127,6)" rx="2" ry="2" />
+<text  x="596.91" y="367.5" ></text>
+</g>
+<g >
+<title>_int_free (3 samples, 0.13%)</title><rect x="979.8" y="405" width="1.5" height="15.0" fill="rgb(215,215,21)" rx="2" ry="2" />
+<text  x="982.79" y="415.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateCanonicalPrespecializedGenericMetadata (2 samples, 0.09%)</title><rect x="12.5" y="533" width="1.1" height="15.0" fill="rgb(242,103,49)" rx="2" ry="2" />
+<text  x="15.54" y="543.5" ></text>
+</g>
+<g >
+<title>common_interrupt (1 samples, 0.04%)</title><rect x="853.9" y="325" width="0.5" height="15.0" fill="rgb(226,158,31)" rx="2" ry="2" />
+<text  x="856.87" y="335.5" ></text>
+</g>
+<g >
+<title>arch_scale_freq_tick (1 samples, 0.04%)</title><rect x="937.7" y="101" width="0.5" height="15.0" fill="rgb(208,87,49)" rx="2" ry="2" />
+<text  x="940.65" y="111.5" ></text>
+</g>
+<g >
+<title>perf-exec (5 samples, 0.22%)</title><rect x="1187.5" y="581" width="2.5" height="15.0" fill="rgb(241,181,52)" rx="2" ry="2" />
+<text  x="1190.46" y="591.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[1] = Dead&gt; of Foundation.Data._Representation.init(Swift.UnsafeRawBufferPointer) -&gt; Foundation.Data._Representation (17 samples, 0.73%)</title><rect x="591.4" y="373" width="8.6" height="15.0" fill="rgb(246,45,50)" rx="2" ry="2" />
+<text  x="594.37" y="383.5" ></text>
+</g>
+<g >
+<title>Swift.Hasher.combine(bytes: Swift.UnsafeRawBufferPointer) -&gt; () (2 samples, 0.09%)</title><rect x="842.7" y="405" width="1.0" height="15.0" fill="rgb(251,189,16)" rx="2" ry="2" />
+<text  x="845.70" y="415.5" ></text>
+</g>
+<g >
+<title>check_new_pages (1 samples, 0.04%)</title><rect x="945.8" y="245" width="0.5" height="15.0" fill="rgb(251,194,7)" rx="2" ry="2" />
+<text  x="948.77" y="255.5" ></text>
+</g>
+<g >
+<title>scsi_io_completion (1 samples, 0.04%)</title><rect x="853.9" y="261" width="0.5" height="15.0" fill="rgb(225,165,34)" rx="2" ry="2" />
+<text  x="856.87" y="271.5" ></text>
+</g>
+<g >
+<title>amdgpu_irq_handler (1 samples, 0.04%)</title><rect x="907.2" y="197" width="0.5" height="15.0" fill="rgb(234,118,47)" rx="2" ry="2" />
+<text  x="910.19" y="207.5" ></text>
+</g>
+<g >
+<title>folio_lruvec_lock_irqsave (1 samples, 0.04%)</title><rect x="937.7" y="261" width="0.5" height="15.0" fill="rgb(216,30,22)" rx="2" ry="2" />
+<text  x="940.65" y="271.5" ></text>
+</g>
+<g >
+<title>folio_batch_move_lru (8 samples, 0.34%)</title><rect x="937.7" y="277" width="4.0" height="15.0" fill="rgb(243,39,26)" rx="2" ry="2" />
+<text  x="940.65" y="287.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="13.6" y="533" width="0.5" height="15.0" fill="rgb(209,191,17)" rx="2" ry="2" />
+<text  x="16.55" y="543.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Foundation.Data.init&lt;A where A: Swift.Sequence, A.Element == Swift.UInt8&gt;(A) -&gt; Foundation.Data (4 samples, 0.17%)</title><rect x="1181.9" y="549" width="2.0" height="15.0" fill="rgb(225,15,28)" rx="2" ry="2" />
+<text  x="1184.88" y="559.5" ></text>
+</g>
+<g >
+<title>preempt_count_sub (1 samples, 0.04%)</title><rect x="1170.7" y="373" width="0.5" height="15.0" fill="rgb(253,38,45)" rx="2" ry="2" />
+<text  x="1173.71" y="383.5" ></text>
+</g>
+<g >
+<title>blk_mq_do_dispatch_sched (6 samples, 0.26%)</title><rect x="948.8" y="181" width="3.1" height="15.0" fill="rgb(236,73,25)" rx="2" ry="2" />
+<text  x="951.82" y="191.5" ></text>
+</g>
+<g >
+<title>try_charge_memcg (2 samples, 0.09%)</title><rect x="927.0" y="245" width="1.0" height="15.0" fill="rgb(227,159,28)" rx="2" ry="2" />
+<text  x="929.99" y="255.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String&gt; of Swift.__RawDictionaryStorage.find&lt;A where A: Swift.Hashable&gt;(A) -&gt; (bucket: Swift._HashTable.Bucket, found: Swift.Bool) (4 samples, 0.17%)</title><rect x="615.7" y="453" width="2.1" height="15.0" fill="rgb(207,150,33)" rx="2" ry="2" />
+<text  x="618.74" y="463.5" ></text>
+</g>
+<g >
+<title>__rcu_read_unlock (1 samples, 0.04%)</title><rect x="854.9" y="325" width="0.5" height="15.0" fill="rgb(217,143,18)" rx="2" ry="2" />
+<text  x="857.89" y="335.5" ></text>
+</g>
+<g >
+<title>__GI__IO_do_write (1 samples, 0.04%)</title><rect x="991.0" y="421" width="0.5" height="15.0" fill="rgb(229,190,3)" rx="2" ry="2" />
+<text  x="993.96" y="431.5" ></text>
+</g>
+<g >
+<title>_dl_sysdep_start (1 samples, 0.04%)</title><rect x="1178.8" y="533" width="0.5" height="15.0" fill="rgb(206,128,54)" rx="2" ry="2" />
+<text  x="1181.83" y="543.5" ></text>
+</g>
+<g >
+<title>___slab_alloc (1 samples, 0.04%)</title><rect x="954.4" y="213" width="0.5" height="15.0" fill="rgb(226,106,20)" rx="2" ry="2" />
+<text  x="957.41" y="223.5" ></text>
+</g>
+<g >
+<title>__common_interrupt (1 samples, 0.04%)</title><rect x="1170.2" y="437" width="0.5" height="15.0" fill="rgb(206,197,16)" rx="2" ry="2" />
+<text  x="1173.20" y="447.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8, Foundation.Data._Representation&gt; of Swift.ArraySlice.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A1) throws -&gt; A1 (18 samples, 0.77%)</title><rect x="590.9" y="437" width="9.1" height="15.0" fill="rgb(218,14,14)" rx="2" ry="2" />
+<text  x="593.86" y="447.5" ></text>
+</g>
+<g >
+<title>__libc_read (1 samples, 0.04%)</title><rect x="1181.4" y="453" width="0.5" height="15.0" fill="rgb(241,24,10)" rx="2" ry="2" />
+<text  x="1184.37" y="463.5" ></text>
+</g>
+<g >
+<title>folio_wait_bit_common (17 samples, 0.73%)</title><rect x="913.3" y="325" width="8.6" height="15.0" fill="rgb(231,161,15)" rx="2" ry="2" />
+<text  x="916.28" y="335.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String&gt; of Swift.__RawDictionaryStorage.find&lt;A where A: Swift.Hashable&gt;(_: A, hashValue: Swift.Int) -&gt; (bucket: Swift._HashTable.Bucket, found: Swift.Bool) (1 samples, 0.04%)</title><rect x="617.8" y="453" width="0.5" height="15.0" fill="rgb(221,190,31)" rx="2" ry="2" />
+<text  x="620.77" y="463.5" ></text>
+</g>
+<g >
+<title>update_process_times (1 samples, 0.04%)</title><rect x="585.8" y="373" width="0.5" height="15.0" fill="rgb(224,105,42)" rx="2" ry="2" />
+<text  x="588.78" y="383.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (13 samples, 0.56%)</title><rect x="15.6" y="533" width="6.6" height="15.0" fill="rgb(250,25,33)" rx="2" ry="2" />
+<text  x="18.59" y="543.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (2 samples, 0.09%)</title><rect x="1170.7" y="437" width="1.0" height="15.0" fill="rgb(205,126,32)" rx="2" ry="2" />
+<text  x="1173.71" y="447.5" ></text>
+</g>
+<g >
+<title>partial apply forwarder for closure #1 (Swift.UnsafeRawBufferPointer) -&gt; () in (extension in Foundation):Foundation.DataProtocol&lt; where A: Foundation.ContiguousBytes&gt;.copyBytes&lt;A, B where B1: Swift.RangeExpression, A.Swift.Collection.Index == B1.Bound&gt;(to: Swift.UnsafeMutableBufferPointer&lt;A1&gt;, from: B1) -&gt; () (2 samples, 0.09%)</title><rect x="12.5" y="549" width="1.1" height="15.0" fill="rgb(219,113,23)" rx="2" ry="2" />
+<text  x="15.54" y="559.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.Int&gt; of generic partial specialization &lt;serialized, Signature = @escaping @convention(thin) &lt;A, B where A == Swift.String, B: Swift.FixedWidthInteger&gt; (@unowned Swift.UnsafeBufferPointer&lt;Swift.UInt8&gt;, @unowned Swift.Int) -&gt; (@out B?)&gt; of closure #1 (Swift.UnsafeBufferPointer&lt;Swift.UInt8&gt;) -&gt; B? in Swift._parseInteger&lt;A, B where A: Swift.StringProtocol, B: Swift.FixedWidthInteger&gt;(ascii: A, radix: Swift.Int) -&gt; B? (4 samples, 0.17%)</title><rect x="611.2" y="437" width="2.0" height="15.0" fill="rgb(239,54,35)" rx="2" ry="2" />
+<text  x="614.17" y="447.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (1 samples, 0.04%)</title><rect x="937.7" y="197" width="0.5" height="15.0" fill="rgb(235,221,1)" rx="2" ry="2" />
+<text  x="940.65" y="207.5" ></text>
+</g>
+<g >
+<title>do_execveat_common.isra.0 (5 samples, 0.22%)</title><rect x="1187.5" y="517" width="2.5" height="15.0" fill="rgb(214,133,54)" rx="2" ry="2" />
+<text  x="1190.46" y="527.5" ></text>
+</g>
+<g >
+<title>amd_pmu_enable_all (5 samples, 0.22%)</title><rect x="1187.5" y="437" width="2.5" height="15.0" fill="rgb(208,229,48)" rx="2" ry="2" />
+<text  x="1190.46" y="447.5" ></text>
+</g>
+<g >
+<title>__memcpy_sse2_unaligned (3 samples, 0.13%)</title><rect x="596.4" y="357" width="1.6" height="15.0" fill="rgb(247,190,34)" rx="2" ry="2" />
+<text  x="599.45" y="367.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8, Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Swift.Array.init&lt;A where A == A1.Element, A1: Swift.Sequence&gt;(A1) -&gt; [A] (1 samples, 0.04%)</title><rect x="640.1" y="485" width="0.5" height="15.0" fill="rgb(217,40,19)" rx="2" ry="2" />
+<text  x="643.11" y="495.5" ></text>
+</g>
+<g >
+<title>main.(main in _12232F587A4C5CD8B1EEDF696793A4FC)() -&gt; () (7 samples, 0.30%)</title><rect x="1181.4" y="565" width="3.5" height="15.0" fill="rgb(241,18,37)" rx="2" ry="2" />
+<text  x="1184.37" y="575.5" ></text>
+</g>
+<g >
+<title>swift_getAssociatedTypeWitness (1 samples, 0.04%)</title><rect x="638.1" y="405" width="0.5" height="15.0" fill="rgb(215,229,53)" rx="2" ry="2" />
+<text  x="641.08" y="415.5" ></text>
+</g>
+<g >
+<title>swift::runtime::SwiftTLSContext::get (1 samples, 0.04%)</title><rect x="989.9" y="389" width="0.6" height="15.0" fill="rgb(224,141,26)" rx="2" ry="2" />
+<text  x="992.95" y="399.5" ></text>
+</g>
+<g >
+<title>(extension in Foundation):Swift.String.Encoding.utf8.unsafeMutableAddressor : (extension in Foundation):Swift.String.Encoding (2 samples, 0.09%)</title><rect x="10.0" y="533" width="1.0" height="15.0" fill="rgb(244,109,13)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" ></text>
+</g>
+<g >
+<title>dc_stream_get_vblank_counter (1 samples, 0.04%)</title><rect x="1095.6" y="229" width="0.5" height="15.0" fill="rgb(232,174,32)" rx="2" ry="2" />
+<text  x="1098.56" y="239.5" ></text>
+</g>
+<g >
+<title>_copy_to_iter (90 samples, 3.87%)</title><rect x="862.0" y="325" width="45.7" height="15.0" fill="rgb(243,179,54)" rx="2" ry="2" />
+<text  x="865.00" y="335.5" >_cop..</text>
+</g>
+<g >
+<title>protocol witness for Foundation.ContiguousBytes.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A1) throws -&gt; A1 in conformance Foundation.Data : Foundation.ContiguousBytes in Foundation (5 samples, 0.22%)</title><rect x="635.5" y="405" width="2.6" height="15.0" fill="rgb(211,37,34)" rx="2" ry="2" />
+<text  x="638.54" y="415.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (2 samples, 0.09%)</title><rect x="1170.7" y="469" width="1.0" height="15.0" fill="rgb(235,99,53)" rx="2" ry="2" />
+<text  x="1173.71" y="479.5" ></text>
+</g>
+<g >
+<title>__mod_lruvec_state (1 samples, 0.04%)</title><rect x="942.2" y="261" width="0.5" height="15.0" fill="rgb(212,82,6)" rx="2" ry="2" />
+<text  x="945.22" y="271.5" ></text>
+</g>
+<g >
+<title>main.(getInstanceOrCreateNew in _12232F587A4C5CD8B1EEDF696793A4FC)(dictionary: inout [Swift.String : main.(Product in _12232F587A4C5CD8B1EEDF696793A4FC)], forKey: Swift.String) -&gt; main.(Product in _12232F587A4C5CD8B1EEDF696793A4FC) (14 samples, 0.60%)</title><rect x="837.1" y="485" width="7.1" height="15.0" fill="rgb(239,189,7)" rx="2" ry="2" />
+<text  x="840.12" y="495.5" ></text>
+</g>
+<g >
+<title>read_pages (24 samples, 1.03%)</title><rect x="947.3" y="309" width="12.2" height="15.0" fill="rgb(207,157,4)" rx="2" ry="2" />
+<text  x="950.30" y="319.5" ></text>
+</g>
+<g >
+<title>vfs_statx (8 samples, 0.34%)</title><rect x="984.9" y="373" width="4.0" height="15.0" fill="rgb(240,29,43)" rx="2" ry="2" />
+<text  x="987.87" y="383.5" ></text>
+</g>
+<g >
+<title>timekeeping_advance (2 samples, 0.09%)</title><rect x="584.8" y="357" width="1.0" height="15.0" fill="rgb(243,46,3)" rx="2" ry="2" />
+<text  x="587.77" y="367.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (2 samples, 0.09%)</title><rect x="981.8" y="453" width="1.0" height="15.0" fill="rgb(218,184,22)" rx="2" ry="2" />
+<text  x="984.82" y="463.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (1 samples, 0.04%)</title><rect x="585.8" y="357" width="0.5" height="15.0" fill="rgb(220,40,3)" rx="2" ry="2" />
+<text  x="588.78" y="367.5" ></text>
+</g>
+<g >
+<title>page_cache_ra_unbounded (76 samples, 3.27%)</title><rect x="922.4" y="325" width="38.6" height="15.0" fill="rgb(205,9,5)" rx="2" ry="2" />
+<text  x="925.42" y="335.5" >pag..</text>
+</g>
+<g >
+<title>security_inode_getattr (4 samples, 0.17%)</title><rect x="986.9" y="357" width="2.0" height="15.0" fill="rgb(237,207,7)" rx="2" ry="2" />
+<text  x="989.90" y="367.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (1 samples, 0.04%)</title><rect x="853.9" y="309" width="0.5" height="15.0" fill="rgb(220,29,23)" rx="2" ry="2" />
+<text  x="856.87" y="319.5" ></text>
+</g>
+<g >
+<title>mem_cgroup_handle_over_high (1 samples, 0.04%)</title><rect x="967.1" y="357" width="0.5" height="15.0" fill="rgb(222,4,18)" rx="2" ry="2" />
+<text  x="970.10" y="367.5" ></text>
+</g>
+<g >
+<title>unlock_page (1 samples, 0.04%)</title><rect x="1096.1" y="325" width="0.5" height="15.0" fill="rgb(252,27,50)" rx="2" ry="2" />
+<text  x="1099.07" y="335.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (2 samples, 0.09%)</title><rect x="609.6" y="421" width="1.1" height="15.0" fill="rgb(223,99,31)" rx="2" ry="2" />
+<text  x="612.65" y="431.5" ></text>
+</g>
+<g >
+<title>(extension in Foundation):Swift.String.init(data: __shared Foundation.Data, encoding: (extension in Foundation):Swift.String.Encoding) -&gt; Swift.String? (1 samples, 0.04%)</title><rect x="1181.4" y="549" width="0.5" height="15.0" fill="rgb(233,156,25)" rx="2" ry="2" />
+<text  x="1184.37" y="559.5" ></text>
+</g>
+<g >
+<title>generic not re-abstracted specialization &lt;Swift.Int&gt; of generic partial specialization &lt;serialized, Signature = @escaping @convention(thin) &lt;A&gt;&lt;A1 where A: Swift.FixedWidthInteger, A1 == Swift.String&gt; (@unowned Swift.UnsafeBufferPointer&lt;Swift.UInt8&gt;, @unowned Swift.Int) -&gt; (@out A?)&gt; of closure #1 (Swift.UnsafeBufferPointer&lt;Swift.UInt8&gt;) -&gt; A? in (extension in Swift):Swift.FixedWidthInteger.init&lt;A where A1: Swift.StringProtocol&gt;(_: A1, radix: Swift.Int) -&gt; A? (4 samples, 0.17%)</title><rect x="611.2" y="453" width="2.0" height="15.0" fill="rgb(206,186,22)" rx="2" ry="2" />
+<text  x="614.17" y="463.5" ></text>
+</g>
+<g >
+<title>amdgpu_ih_process (1 samples, 0.04%)</title><rect x="1095.6" y="357" width="0.5" height="15.0" fill="rgb(222,134,48)" rx="2" ry="2" />
+<text  x="1098.56" y="367.5" ></text>
+</g>
+<g >
+<title>blk_complete_reqs (1 samples, 0.04%)</title><rect x="853.9" y="277" width="0.5" height="15.0" fill="rgb(216,136,0)" rx="2" ry="2" />
+<text  x="856.87" y="287.5" ></text>
+</g>
+<g >
+<title>kmem_cache_alloc (1 samples, 0.04%)</title><rect x="954.4" y="245" width="0.5" height="15.0" fill="rgb(245,151,49)" rx="2" ry="2" />
+<text  x="957.41" y="255.5" ></text>
+</g>
+<g >
+<title>get_mem_cgroup_from_mm (2 samples, 0.09%)</title><rect x="928.0" y="261" width="1.0" height="15.0" fill="rgb(232,227,11)" rx="2" ry="2" />
+<text  x="931.00" y="271.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Foundation.Data.init&lt;A where A: Swift.Sequence, A.Element == Swift.UInt8&gt;(A) -&gt; Foundation.Data (49 samples, 2.11%)</title><rect x="586.3" y="485" width="24.9" height="15.0" fill="rgb(210,167,51)" rx="2" ry="2" />
+<text  x="589.29" y="495.5" >g..</text>
+</g>
+<g >
+<title>blk_mq_submit_bio (1 samples, 0.04%)</title><rect x="956.4" y="261" width="0.5" height="15.0" fill="rgb(250,71,28)" rx="2" ry="2" />
+<text  x="959.44" y="271.5" ></text>
+</g>
+<g >
+<title>tick_sched_do_timer (2 samples, 0.09%)</title><rect x="584.8" y="389" width="1.0" height="15.0" fill="rgb(210,113,25)" rx="2" ry="2" />
+<text  x="587.77" y="399.5" ></text>
+</g>
+<g >
+<title>page_cache_async_ra (1 samples, 0.04%)</title><rect x="921.9" y="325" width="0.5" height="15.0" fill="rgb(216,192,53)" rx="2" ry="2" />
+<text  x="924.91" y="335.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (17 samples, 0.73%)</title><rect x="647.2" y="405" width="8.7" height="15.0" fill="rgb(233,83,48)" rx="2" ry="2" />
+<text  x="650.22" y="415.5" ></text>
+</g>
+<g >
+<title>__tls_get_addr (1 samples, 0.04%)</title><rect x="989.9" y="373" width="0.6" height="15.0" fill="rgb(219,177,51)" rx="2" ry="2" />
+<text  x="992.95" y="383.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String&gt; of Swift.__RawDictionaryStorage.find&lt;A where A: Swift.Hashable&gt;(_: A, hashValue: Swift.Int) -&gt; (bucket: Swift._HashTable.Bucket, found: Swift.Bool) (1 samples, 0.04%)</title><rect x="843.7" y="453" width="0.5" height="15.0" fill="rgb(242,47,18)" rx="2" ry="2" />
+<text  x="846.72" y="463.5" ></text>
+</g>
+<g >
+<title>reabstraction thunk helper from @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@owned Foundation.Data._Representation, @error @owned Swift.Error) to @escaping @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@out Foundation.Data._Representation, @error @owned Swift.Error) (18 samples, 0.77%)</title><rect x="590.9" y="421" width="9.1" height="15.0" fill="rgb(253,71,8)" rx="2" ry="2" />
+<text  x="593.86" y="431.5" ></text>
+</g>
+<g >
+<title>Swift.String.hash(into: inout Swift.Hasher) -&gt; () (1 samples, 0.04%)</title><rect x="617.3" y="421" width="0.5" height="15.0" fill="rgb(234,52,52)" rx="2" ry="2" />
+<text  x="620.26" y="431.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (2 samples, 0.09%)</title><rect x="618.8" y="421" width="1.0" height="15.0" fill="rgb(222,105,23)" rx="2" ry="2" />
+<text  x="621.79" y="431.5" ></text>
+</g>
+<g >
+<title>new_do_write (1 samples, 0.04%)</title><rect x="991.0" y="405" width="0.5" height="15.0" fill="rgb(208,109,54)" rx="2" ry="2" />
+<text  x="993.96" y="415.5" ></text>
+</g>
+<g >
+<title>[unknown] (18 samples, 0.77%)</title><rect x="13.6" y="565" width="9.1" height="15.0" fill="rgb(240,0,27)" rx="2" ry="2" />
+<text  x="16.55" y="575.5" ></text>
+</g>
+<g >
+<title>swift::RefCounts&lt;swift::RefCountBitsT&lt; (17 samples, 0.73%)</title><rect x="600.0" y="453" width="8.6" height="15.0" fill="rgb(218,37,39)" rx="2" ry="2" />
+<text  x="603.00" y="463.5" ></text>
+</g>
+<g >
+<title>main (3 samples, 0.13%)</title><rect x="1184.9" y="565" width="1.5" height="15.0" fill="rgb(241,13,0)" rx="2" ry="2" />
+<text  x="1187.92" y="575.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (1 samples, 0.04%)</title><rect x="1096.6" y="437" width="0.5" height="15.0" fill="rgb(251,133,50)" rx="2" ry="2" />
+<text  x="1099.57" y="447.5" ></text>
+</g>
+<g >
+<title>__common_interrupt (1 samples, 0.04%)</title><rect x="1095.6" y="437" width="0.5" height="15.0" fill="rgb(240,163,19)" rx="2" ry="2" />
+<text  x="1098.56" y="447.5" ></text>
+</g>
+<g >
+<title>main.FileHandle2.read(upToCount: Swift.Int) throws -&gt; Foundation.Data? (289 samples, 12.44%)</title><rect x="844.2" y="485" width="146.8" height="15.0" fill="rgb(219,198,33)" rx="2" ry="2" />
+<text  x="847.23" y="495.5" >main.FileHandle2.r..</text>
+</g>
+<g >
+<title>swift_slowAlloc (1 samples, 0.04%)</title><rect x="1183.9" y="469" width="0.5" height="15.0" fill="rgb(217,22,37)" rx="2" ry="2" />
+<text  x="1186.91" y="479.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift._ContiguousArrayBuffer._consumeAndCreateNew(bufferIsUnique: Swift.Bool, minimumCapacity: Swift.Int, growForAppend: Swift.Bool) -&gt; Swift._ContiguousArrayBuffer&lt;A&gt; (2 samples, 0.09%)</title><rect x="618.8" y="453" width="1.0" height="15.0" fill="rgb(248,211,8)" rx="2" ry="2" />
+<text  x="621.79" y="463.5" ></text>
+</g>
+<g >
+<title>swift_bridgeObjectRelease@plt (1 samples, 0.04%)</title><rect x="1020.4" y="485" width="0.5" height="15.0" fill="rgb(212,152,46)" rx="2" ry="2" />
+<text  x="1023.41" y="495.5" ></text>
+</g>
+<g >
+<title>Swift.Hasher.combine(bytes: Swift.UnsafeRawBufferPointer) -&gt; () (1 samples, 0.04%)</title><rect x="617.3" y="405" width="0.5" height="15.0" fill="rgb(206,57,20)" rx="2" ry="2" />
+<text  x="620.26" y="415.5" ></text>
+</g>
+<g >
+<title>swift_deallocClassInstance (1 samples, 0.04%)</title><rect x="1011.3" y="453" width="0.5" height="15.0" fill="rgb(207,49,14)" rx="2" ry="2" />
+<text  x="1014.27" y="463.5" ></text>
+</g>
+<g >
+<title>xa_load (3 samples, 0.13%)</title><rect x="959.5" y="309" width="1.5" height="15.0" fill="rgb(225,211,44)" rx="2" ry="2" />
+<text  x="962.48" y="319.5" ></text>
+</g>
+<g >
+<title>blake2s_compress_generic (1 samples, 0.04%)</title><rect x="853.9" y="197" width="0.5" height="15.0" fill="rgb(228,218,24)" rx="2" ry="2" />
+<text  x="856.87" y="207.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (16 samples, 0.69%)</title><rect x="1006.2" y="469" width="8.1" height="15.0" fill="rgb(231,174,18)" rx="2" ry="2" />
+<text  x="1009.20" y="479.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[0] = Owned To Guaranteed, Arg[2] = Dead&gt; of Foundation.Data.Iterator.init(_: Foundation.Data, at: Swift.Int) -&gt; Foundation.Data.Iterator (10 samples, 0.43%)</title><rect x="634.0" y="437" width="5.1" height="15.0" fill="rgb(230,66,0)" rx="2" ry="2" />
+<text  x="637.02" y="447.5" ></text>
+</g>
+<g >
+<title>merged Swift.print(_: Any..., separator: Swift.String, terminator: Swift.String) -&gt; () (1 samples, 0.04%)</title><rect x="991.0" y="485" width="0.5" height="15.0" fill="rgb(242,129,14)" rx="2" ry="2" />
+<text  x="993.96" y="495.5" ></text>
+</g>
+<g >
+<title>dispatch thunk of Swift.Collection.startIndex.getter : A.Index (1 samples, 0.04%)</title><rect x="637.1" y="277" width="0.5" height="15.0" fill="rgb(219,168,26)" rx="2" ry="2" />
+<text  x="640.07" y="287.5" ></text>
+</g>
+<g >
+<title>main.(main in _12232F587A4C5CD8B1EEDF696793A4FC)() -&gt; () (2,277 samples, 97.98%)</title><rect x="22.7" y="501" width="1156.1" height="15.0" fill="rgb(231,165,47)" rx="2" ry="2" />
+<text  x="25.69" y="511.5" >main.(main in _12232F587A4C5CD8B1EEDF696793A4FC)() -&gt; ()</text>
+</g>
+<g >
+<title>__x86_indirect_thunk_rax (1 samples, 0.04%)</title><rect x="847.3" y="421" width="0.5" height="15.0" fill="rgb(210,166,47)" rx="2" ry="2" />
+<text  x="850.27" y="431.5" ></text>
+</g>
+<g >
+<title>finish_task_switch.isra.0 (15 samples, 0.65%)</title><rect x="913.8" y="261" width="7.6" height="15.0" fill="rgb(213,226,52)" rx="2" ry="2" />
+<text  x="916.79" y="271.5" ></text>
+</g>
+<g >
+<title>fpregs_assert_state_consistent (1 samples, 0.04%)</title><rect x="966.6" y="357" width="0.5" height="15.0" fill="rgb(237,141,18)" rx="2" ry="2" />
+<text  x="969.59" y="367.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.Array._checkSubscript(_: Swift.Int, wasNativeTypeChecked: Swift.Bool) -&gt; Swift._DependenceToken (289 samples, 12.44%)</title><rect x="655.9" y="469" width="146.7" height="15.0" fill="rgb(218,147,4)" rx="2" ry="2" />
+<text  x="658.85" y="479.5" >generic specializa..</text>
+</g>
+<g >
+<title>cp_new_stat (1 samples, 0.04%)</title><rect x="982.8" y="389" width="0.5" height="15.0" fill="rgb(224,107,49)" rx="2" ry="2" />
+<text  x="985.84" y="399.5" ></text>
+</g>
+<g >
+<title>atime_needs_update (3 samples, 0.13%)</title><rect x="962.5" y="325" width="1.6" height="15.0" fill="rgb(232,162,54)" rx="2" ry="2" />
+<text  x="965.53" y="335.5" ></text>
+</g>
+<g >
+<title>swift_release (1 samples, 0.04%)</title><rect x="990.5" y="469" width="0.5" height="15.0" fill="rgb(247,118,33)" rx="2" ry="2" />
+<text  x="993.46" y="479.5" ></text>
+</g>
+<g >
+<title>scsi_queue_rq (6 samples, 0.26%)</title><rect x="948.8" y="149" width="3.1" height="15.0" fill="rgb(222,62,2)" rx="2" ry="2" />
+<text  x="951.82" y="159.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8, Foundation.Data&gt; of Swift.Array.append&lt;A where A == A1.Element, A1: Swift.Sequence&gt;(contentsOf: __owned A1) -&gt; () (42 samples, 1.81%)</title><rect x="618.8" y="485" width="21.3" height="15.0" fill="rgb(205,29,50)" rx="2" ry="2" />
+<text  x="621.79" y="495.5" >g..</text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[0] = Owned To Guaranteed, Arg[2] = Dead&gt; of Foundation.Data.Iterator.init(_: Foundation.Data, at: Swift.Int) -&gt; Foundation.Data.Iterator (1 samples, 0.04%)</title><rect x="638.6" y="421" width="0.5" height="15.0" fill="rgb(210,127,18)" rx="2" ry="2" />
+<text  x="641.59" y="431.5" ></text>
+</g>
+<g >
+<title>__alloc_pages (6 samples, 0.26%)</title><rect x="943.7" y="293" width="3.1" height="15.0" fill="rgb(242,115,10)" rx="2" ry="2" />
+<text  x="946.74" y="303.5" ></text>
+</g>
+<g >
+<title>ehci_work.part.0 (1 samples, 0.04%)</title><rect x="1170.2" y="341" width="0.5" height="15.0" fill="rgb(234,199,37)" rx="2" ry="2" />
+<text  x="1173.20" y="351.5" ></text>
+</g>
+<g >
+<title>mem_cgroup_charge_statistics (2 samples, 0.09%)</title><rect x="926.0" y="245" width="1.0" height="15.0" fill="rgb(249,53,1)" rx="2" ry="2" />
+<text  x="928.97" y="255.5" ></text>
+</g>
+<g >
+<title>selinux_inode_getattr (3 samples, 0.13%)</title><rect x="987.4" y="341" width="1.5" height="15.0" fill="rgb(235,72,14)" rx="2" ry="2" />
+<text  x="990.41" y="351.5" ></text>
+</g>
+<g >
+<title>dma_map_sg_attrs (1 samples, 0.04%)</title><rect x="951.4" y="85" width="0.5" height="15.0" fill="rgb(211,56,48)" rx="2" ry="2" />
+<text  x="954.36" y="95.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (3 samples, 0.13%)</title><rect x="1096.6" y="469" width="1.5" height="15.0" fill="rgb(248,215,15)" rx="2" ry="2" />
+<text  x="1099.57" y="479.5" ></text>
+</g>
+<g >
+<title>Swift._ContiguousArrayStorage.__deallocating_deinit (3 samples, 0.13%)</title><rect x="1184.9" y="549" width="1.5" height="15.0" fill="rgb(251,128,14)" rx="2" ry="2" />
+<text  x="1187.92" y="559.5" ></text>
+</g>
+<g >
+<title>swift_release (150 samples, 6.45%)</title><rect x="1021.9" y="485" width="76.2" height="15.0" fill="rgb(214,150,15)" rx="2" ry="2" />
+<text  x="1024.94" y="495.5" >swift_re..</text>
+</g>
+<g >
+<title>__blk_mq_sched_dispatch_requests (8 samples, 0.34%)</title><rect x="947.8" y="197" width="4.1" height="15.0" fill="rgb(218,219,7)" rx="2" ry="2" />
+<text  x="950.81" y="207.5" ></text>
+</g>
+<g >
+<title>filename_lookup (1 samples, 0.04%)</title><rect x="986.4" y="357" width="0.5" height="15.0" fill="rgb(240,80,1)" rx="2" ry="2" />
+<text  x="989.39" y="367.5" ></text>
+</g>
+<g >
+<title>update_blocked_averages (1 samples, 0.04%)</title><rect x="967.1" y="261" width="0.5" height="15.0" fill="rgb(230,45,45)" rx="2" ry="2" />
+<text  x="970.10" y="271.5" ></text>
+</g>
+<g >
+<title>__libc_read (1 samples, 0.04%)</title><rect x="13.6" y="549" width="0.5" height="15.0" fill="rgb(238,215,50)" rx="2" ry="2" />
+<text  x="16.55" y="559.5" ></text>
+</g>
+<g >
+<title>__blk_flush_plug (10 samples, 0.43%)</title><rect x="947.3" y="277" width="5.1" height="15.0" fill="rgb(245,89,53)" rx="2" ry="2" />
+<text  x="950.30" y="287.5" ></text>
+</g>
+<g >
+<title>native_read_msr (1 samples, 0.04%)</title><rect x="937.7" y="85" width="0.5" height="15.0" fill="rgb(239,75,35)" rx="2" ry="2" />
+<text  x="940.65" y="95.5" ></text>
+</g>
+<g >
+<title>_swift_getGenericMetadata (2 samples, 0.09%)</title><rect x="14.1" y="517" width="1.0" height="15.0" fill="rgb(208,20,14)" rx="2" ry="2" />
+<text  x="17.06" y="527.5" ></text>
+</g>
+<g >
+<title>__handle_irq_event_percpu (1 samples, 0.04%)</title><rect x="1170.2" y="389" width="0.5" height="15.0" fill="rgb(205,94,52)" rx="2" ry="2" />
+<text  x="1173.20" y="399.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (4 samples, 0.17%)</title><rect x="608.6" y="453" width="2.1" height="15.0" fill="rgb(209,112,33)" rx="2" ry="2" />
+<text  x="611.63" y="463.5" ></text>
+</g>
+<g >
+<title>handle_fasteoi_irq (1 samples, 0.04%)</title><rect x="1170.2" y="421" width="0.5" height="15.0" fill="rgb(211,194,6)" rx="2" ry="2" />
+<text  x="1173.20" y="431.5" ></text>
+</g>
+<g >
+<title>__x64_sys_execve (5 samples, 0.22%)</title><rect x="1187.5" y="533" width="2.5" height="15.0" fill="rgb(211,179,28)" rx="2" ry="2" />
+<text  x="1190.46" y="543.5" ></text>
+</g>
+<g >
+<title>swift_retain (132 samples, 5.68%)</title><rect x="1104.7" y="485" width="67.0" height="15.0" fill="rgb(224,229,53)" rx="2" ry="2" />
+<text  x="1107.70" y="495.5" >swift_r..</text>
+</g>
+<g >
+<title>run_rebalance_domains (1 samples, 0.04%)</title><rect x="1096.6" y="405" width="0.5" height="15.0" fill="rgb(208,121,42)" rx="2" ry="2" />
+<text  x="1099.57" y="415.5" ></text>
+</g>
+<g >
+<title>update_wall_time (2 samples, 0.09%)</title><rect x="584.8" y="373" width="1.0" height="15.0" fill="rgb(243,212,16)" rx="2" ry="2" />
+<text  x="587.77" y="383.5" ></text>
+</g>
+<g >
+<title>folio_alloc (7 samples, 0.30%)</title><rect x="943.7" y="309" width="3.6" height="15.0" fill="rgb(227,223,41)" rx="2" ry="2" />
+<text  x="946.74" y="319.5" ></text>
+</g>
+<g >
+<title>__rcu_read_unlock (1 samples, 0.04%)</title><rect x="960.5" y="293" width="0.5" height="15.0" fill="rgb(229,163,0)" rx="2" ry="2" />
+<text  x="963.50" y="303.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock_irq (1 samples, 0.04%)</title><rect x="929.5" y="277" width="0.5" height="15.0" fill="rgb(231,223,21)" rx="2" ry="2" />
+<text  x="932.53" y="287.5" ></text>
+</g>
+<g >
+<title>usb_hcd_irq (1 samples, 0.04%)</title><rect x="1170.2" y="373" width="0.5" height="15.0" fill="rgb(229,88,29)" rx="2" ry="2" />
+<text  x="1173.20" y="383.5" ></text>
+</g>
+<g >
+<title>_dl_map_object (1 samples, 0.04%)</title><rect x="1178.8" y="453" width="0.5" height="15.0" fill="rgb(205,109,6)" rx="2" ry="2" />
+<text  x="1181.83" y="463.5" ></text>
+</g>
+<g >
+<title>generic_exec_single (1 samples, 0.04%)</title><rect x="1097.6" y="325" width="0.5" height="15.0" fill="rgb(218,80,24)" rx="2" ry="2" />
+<text  x="1100.59" y="335.5" ></text>
+</g>
+<g >
+<title>swift::metadataimpl::ValueWitnesses&lt;swift::metadataimpl::NativeBox&lt;unsigned long, 8ul, 8ul, 8ul&gt; &gt;::initializeWithCopy (1 samples, 0.04%)</title><rect x="638.6" y="389" width="0.5" height="15.0" fill="rgb(227,31,42)" rx="2" ry="2" />
+<text  x="641.59" y="399.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1 samples, 0.04%)</title><rect x="1096.6" y="421" width="0.5" height="15.0" fill="rgb(209,187,5)" rx="2" ry="2" />
+<text  x="1099.57" y="431.5" ></text>
+</g>
+<g >
+<title>amdgpu_irq_handler (1 samples, 0.04%)</title><rect x="1095.6" y="373" width="0.5" height="15.0" fill="rgb(228,222,1)" rx="2" ry="2" />
+<text  x="1098.56" y="383.5" ></text>
+</g>
+<g >
+<title>__tls_get_addr (1 samples, 0.04%)</title><rect x="639.1" y="405" width="0.5" height="15.0" fill="rgb(209,120,41)" rx="2" ry="2" />
+<text  x="642.10" y="415.5" ></text>
+</g>
+<g >
+<title>check_preemption_disabled (1 samples, 0.04%)</title><rect x="937.1" y="277" width="0.6" height="15.0" fill="rgb(237,206,10)" rx="2" ry="2" />
+<text  x="940.14" y="287.5" ></text>
+</g>
+<g >
+<title>swift_deallocObject (1 samples, 0.04%)</title><rect x="608.1" y="421" width="0.5" height="15.0" fill="rgb(233,135,42)" rx="2" ry="2" />
+<text  x="611.12" y="431.5" ></text>
+</g>
+<g >
+<title>__common_interrupt (1 samples, 0.04%)</title><rect x="583.8" y="453" width="0.5" height="15.0" fill="rgb(251,62,31)" rx="2" ry="2" />
+<text  x="586.75" y="463.5" ></text>
+</g>
+<g >
+<title>syscall_return_via_sysret (1 samples, 0.04%)</title><rect x="988.9" y="437" width="0.5" height="15.0" fill="rgb(209,68,50)" rx="2" ry="2" />
+<text  x="991.93" y="447.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (2 samples, 0.09%)</title><rect x="1179.8" y="565" width="1.1" height="15.0" fill="rgb(224,199,49)" rx="2" ry="2" />
+<text  x="1182.85" y="575.5" ></text>
+</g>
+<g >
+<title>Foundation.Data.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (27 samples, 1.16%)</title><rect x="568.5" y="469" width="13.7" height="15.0" fill="rgb(224,146,16)" rx="2" ry="2" />
+<text  x="571.52" y="479.5" ></text>
+</g>
+<g >
+<title>dm_crtc_high_irq (1 samples, 0.04%)</title><rect x="1095.6" y="309" width="0.5" height="15.0" fill="rgb(231,36,9)" rx="2" ry="2" />
+<text  x="1098.56" y="319.5" ></text>
+</g>
+<g >
+<title>amdgpu_dm_irq_handler (1 samples, 0.04%)</title><rect x="583.8" y="341" width="0.5" height="15.0" fill="rgb(213,195,32)" rx="2" ry="2" />
+<text  x="586.75" y="351.5" ></text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (3 samples, 0.13%)</title><rect x="966.1" y="389" width="1.5" height="15.0" fill="rgb(212,205,45)" rx="2" ry="2" />
+<text  x="969.08" y="399.5" ></text>
+</g>
+<g >
+<title>__mod_lruvec_state (1 samples, 0.04%)</title><rect x="941.2" y="229" width="0.5" height="15.0" fill="rgb(245,36,1)" rx="2" ry="2" />
+<text  x="944.20" y="239.5" ></text>
+</g>
+<g >
+<title>_swift_getGenericMetadata (2 samples, 0.09%)</title><rect x="12.5" y="517" width="1.1" height="15.0" fill="rgb(247,107,38)" rx="2" ry="2" />
+<text  x="15.54" y="527.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.Array._checkIndex(Swift.Int) -&gt; () (25 samples, 1.08%)</title><rect x="820.4" y="469" width="12.7" height="15.0" fill="rgb(250,81,52)" rx="2" ry="2" />
+<text  x="823.36" y="479.5" ></text>
+</g>
+<g >
+<title>__GI__IO_file_xsputn (1 samples, 0.04%)</title><rect x="991.0" y="437" width="0.5" height="15.0" fill="rgb(233,219,7)" rx="2" ry="2" />
+<text  x="993.96" y="447.5" ></text>
+</g>
+<g >
+<title>filemap_read (207 samples, 8.91%)</title><rect x="859.0" y="357" width="105.1" height="15.0" fill="rgb(245,107,37)" rx="2" ry="2" />
+<text  x="861.95" y="367.5" >filemap_read</text>
+</g>
+<g >
+<title>initializeWithCopy value witness for (extension in Swift):Swift.ClosedRange&lt; where A: Swift.Strideable, A.Stride: Swift.SignedInteger&gt;.Index (1 samples, 0.04%)</title><rect x="1180.9" y="565" width="0.5" height="15.0" fill="rgb(222,221,47)" rx="2" ry="2" />
+<text  x="1183.86" y="575.5" ></text>
+</g>
+<g >
+<title>handle_irq_event (1 samples, 0.04%)</title><rect x="1170.2" y="405" width="0.5" height="15.0" fill="rgb(241,150,3)" rx="2" ry="2" />
+<text  x="1173.20" y="415.5" ></text>
+</g>
+<g >
+<title>swift_beginAccess (1 samples, 0.04%)</title><rect x="637.6" y="341" width="0.5" height="15.0" fill="rgb(243,44,15)" rx="2" ry="2" />
+<text  x="640.57" y="351.5" ></text>
+</g>
+<g >
+<title>update_cfs_group (1 samples, 0.04%)</title><rect x="1171.2" y="309" width="0.5" height="15.0" fill="rgb(222,8,48)" rx="2" ry="2" />
+<text  x="1174.21" y="319.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_prepare (3 samples, 0.13%)</title><rect x="966.1" y="373" width="1.5" height="15.0" fill="rgb(254,29,11)" rx="2" ry="2" />
+<text  x="969.08" y="383.5" ></text>
+</g>
+<g >
+<title>swift_arrayDestroy (4 samples, 0.17%)</title><rect x="20.2" y="517" width="2.0" height="15.0" fill="rgb(227,4,14)" rx="2" ry="2" />
+<text  x="23.15" y="527.5" ></text>
+</g>
+<g >
+<title>fsnotify (3 samples, 0.13%)</title><rect x="855.9" y="341" width="1.5" height="15.0" fill="rgb(229,227,40)" rx="2" ry="2" />
+<text  x="858.90" y="351.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;serialized, Swift.UInt8&gt; of Swift._ContiguousArrayBuffer.init(_uninitializedCount: Swift.Int, minimumCapacity: Swift.Int) -&gt; Swift._ContiguousArrayBuffer&lt;A&gt; (29 samples, 1.25%)</title><rect x="641.1" y="437" width="14.8" height="15.0" fill="rgb(233,222,30)" rx="2" ry="2" />
+<text  x="644.13" y="447.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[2] = Dead&gt; of generic specialization &lt;serialized, Swift.UInt8&gt; of Swift._ContiguousArrayBuffer.init(_uninitializedCount: Swift.Int, minimumCapacity: Swift.Int) -&gt; Swift._ContiguousArrayBuffer&lt;A&gt; (29 samples, 1.25%)</title><rect x="641.1" y="421" width="14.8" height="15.0" fill="rgb(210,16,46)" rx="2" ry="2" />
+<text  x="644.13" y="431.5" ></text>
+</g>
+<g >
+<title>submit_bio_noacct (1 samples, 0.04%)</title><rect x="955.9" y="277" width="0.5" height="15.0" fill="rgb(232,199,29)" rx="2" ry="2" />
+<text  x="958.93" y="287.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;serialized, Swift.UInt8&gt; of Swift.UnsafeMutablePointer.initialize(from: Swift.UnsafePointer&lt;A&gt;, count: Swift.Int) -&gt; () (1 samples, 0.04%)</title><rect x="640.6" y="437" width="0.5" height="15.0" fill="rgb(224,173,45)" rx="2" ry="2" />
+<text  x="643.62" y="447.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String, main.(Product in _12232F587A4C5CD8B1EEDF696793A4FC)&gt; of Swift.Dictionary.subscript.getter : (A) -&gt; B? (14 samples, 0.60%)</title><rect x="837.1" y="469" width="7.1" height="15.0" fill="rgb(231,95,40)" rx="2" ry="2" />
+<text  x="840.12" y="479.5" ></text>
+</g>
+<g >
+<title>bio_alloc_bioset (3 samples, 0.13%)</title><rect x="953.4" y="277" width="1.5" height="15.0" fill="rgb(230,219,19)" rx="2" ry="2" />
+<text  x="956.39" y="287.5" ></text>
+</g>
+<g >
+<title>__libc_start_main_alias_2 (2,277 samples, 97.98%)</title><rect x="22.7" y="549" width="1156.1" height="15.0" fill="rgb(219,132,49)" rx="2" ry="2" />
+<text  x="25.69" y="559.5" >__libc_start_main_alias_2</text>
+</g>
+<g >
+<title>xa_load (5 samples, 0.22%)</title><rect x="956.9" y="277" width="2.6" height="15.0" fill="rgb(245,166,51)" rx="2" ry="2" />
+<text  x="959.94" y="287.5" ></text>
+</g>
+<g >
+<title>__mod_memcg_lruvec_state (2 samples, 0.09%)</title><rect x="942.7" y="261" width="1.0" height="15.0" fill="rgb(246,73,40)" rx="2" ry="2" />
+<text  x="945.73" y="271.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (1 samples, 0.04%)</title><rect x="1171.2" y="389" width="0.5" height="15.0" fill="rgb(242,54,10)" rx="2" ry="2" />
+<text  x="1174.21" y="399.5" ></text>
+</g>
+<g >
+<title>__tls_get_addr (1 samples, 0.04%)</title><rect x="14.1" y="485" width="0.5" height="15.0" fill="rgb(245,158,14)" rx="2" ry="2" />
+<text  x="17.06" y="495.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String&gt; of Swift.__RawDictionaryStorage.find&lt;A where A: Swift.Hashable&gt;(A) -&gt; (bucket: Swift._HashTable.Bucket, found: Swift.Bool) (9 samples, 0.39%)</title><rect x="839.1" y="453" width="4.6" height="15.0" fill="rgb(221,211,29)" rx="2" ry="2" />
+<text  x="842.15" y="463.5" ></text>
+</g>
+<g >
+<title>bvec_alloc (1 samples, 0.04%)</title><rect x="954.4" y="261" width="0.5" height="15.0" fill="rgb(249,23,16)" rx="2" ry="2" />
+<text  x="957.41" y="271.5" ></text>
+</g>
+<g >
+<title>update_process_times (1 samples, 0.04%)</title><rect x="1171.2" y="357" width="0.5" height="15.0" fill="rgb(220,91,48)" rx="2" ry="2" />
+<text  x="1174.21" y="367.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (12 samples, 0.52%)</title><rect x="982.8" y="421" width="6.1" height="15.0" fill="rgb(236,152,24)" rx="2" ry="2" />
+<text  x="985.84" y="431.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[1] = Dead&gt; of static Swift.String._tryFromUTF8(Swift.UnsafeBufferPointer&lt;Swift.UInt8&gt;) -&gt; Swift.String? (16 samples, 0.69%)</title><rect x="574.1" y="389" width="8.1" height="15.0" fill="rgb(247,177,30)" rx="2" ry="2" />
+<text  x="577.10" y="399.5" ></text>
+</g>
+<g >
+<title>dma_pool_free (1 samples, 0.04%)</title><rect x="1170.2" y="309" width="0.5" height="15.0" fill="rgb(236,18,7)" rx="2" ry="2" />
+<text  x="1173.20" y="319.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (3 samples, 0.13%)</title><rect x="1181.9" y="501" width="1.5" height="15.0" fill="rgb(205,209,41)" rx="2" ry="2" />
+<text  x="1184.88" y="511.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (2 samples, 0.09%)</title><rect x="1097.1" y="437" width="1.0" height="15.0" fill="rgb(209,184,38)" rx="2" ry="2" />
+<text  x="1100.08" y="447.5" ></text>
+</g>
+<g >
+<title>closure #1 (Swift.UnsafeRawBufferPointer) -&gt; Foundation.Data._Representation in Foundation.Data.init&lt;A where A: Swift.Sequence, A.Element == Swift.UInt8&gt;(A) -&gt; Foundation.Data (18 samples, 0.77%)</title><rect x="590.9" y="405" width="9.1" height="15.0" fill="rgb(228,181,37)" rx="2" ry="2" />
+<text  x="593.86" y="415.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8, Swift.String.UTF8View&gt; of Swift.Array.init&lt;A where A == A1.Element, A1: Swift.Sequence&gt;(A1) -&gt; [A] (30 samples, 1.29%)</title><rect x="640.6" y="485" width="15.3" height="15.0" fill="rgb(224,176,51)" rx="2" ry="2" />
+<text  x="643.62" y="495.5" ></text>
+</g>
+<g >
+<title>main.FileHandle2._readDataOfLength(_: Swift.Int, untilEOF: Swift.Bool, options: Foundation.NSData.ReadingOptions) throws -&gt; main.NSDataReadResult (286 samples, 12.31%)</title><rect x="844.2" y="469" width="145.2" height="15.0" fill="rgb(231,39,35)" rx="2" ry="2" />
+<text  x="847.23" y="479.5" >main.FileHandle2._..</text>
+</g>
+<g >
+<title>partial apply forwarder for closure #1 (Swift.UnsafeRawBufferPointer) throws -&gt; A in Foundation.Data.InlineData.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (1 samples, 0.04%)</title><rect x="1181.4" y="485" width="0.5" height="15.0" fill="rgb(244,169,0)" rx="2" ry="2" />
+<text  x="1184.37" y="495.5" ></text>
+</g>
+<g >
+<title>blk_finish_plug (10 samples, 0.43%)</title><rect x="947.3" y="293" width="5.1" height="15.0" fill="rgb(231,187,8)" rx="2" ry="2" />
+<text  x="950.30" y="303.5" ></text>
+</g>
+<g >
+<title>__mod_lruvec_page_state (1 samples, 0.04%)</title><rect x="929.0" y="277" width="0.5" height="15.0" fill="rgb(216,156,23)" rx="2" ry="2" />
+<text  x="932.02" y="287.5" ></text>
+</g>
+<g >
+<title>[main] (3 samples, 0.13%)</title><rect x="602.5" y="421" width="1.6" height="15.0" fill="rgb(217,178,29)" rx="2" ry="2" />
+<text  x="605.54" y="431.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;serialized, Swift.String.UTF8View&gt; of Swift._copyCollectionToContiguousArray&lt;A where A: Swift.Collection&gt;(A) -&gt; Swift.ContiguousArray&lt;A.Element&gt; (30 samples, 1.29%)</title><rect x="640.6" y="453" width="15.3" height="15.0" fill="rgb(210,214,4)" rx="2" ry="2" />
+<text  x="643.62" y="463.5" ></text>
+</g>
+<g >
+<title>run_rebalance_domains (1 samples, 0.04%)</title><rect x="967.1" y="277" width="0.5" height="15.0" fill="rgb(222,25,48)" rx="2" ry="2" />
+<text  x="970.10" y="287.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[2] = [Constant Propagated Function : closure #1 (Swift.UnsafeRawBufferPointer) -&gt; Swift.Optional&lt;Swift.String&gt; in (extension in Foundation):Swift.String.init(data: __shared Foundation.Data, encoding: (extension in Foundation):Swift.String.Encoding) -&gt; Swift.Optional&lt;Swift.String&gt;]&gt; of reabstraction thunk helper from @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@owned Swift.String?, @error @owned Swift.Error) to @escaping @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@out Swift.String?, @error @owned Swift.Error) (1 samples, 0.04%)</title><rect x="1181.4" y="469" width="0.5" height="15.0" fill="rgb(212,1,47)" rx="2" ry="2" />
+<text  x="1184.37" y="479.5" ></text>
+</g>
+<g >
+<title>__memmove_sse2_unaligned_erms (28 samples, 1.20%)</title><rect x="619.8" y="437" width="14.2" height="15.0" fill="rgb(209,73,52)" rx="2" ry="2" />
+<text  x="622.80" y="447.5" ></text>
+</g>
+<g >
+<title>io_schedule (16 samples, 0.69%)</title><rect x="913.8" y="309" width="8.1" height="15.0" fill="rgb(254,217,41)" rx="2" ry="2" />
+<text  x="916.79" y="319.5" ></text>
+</g>
+<g >
+<title>__fdget_pos (1 samples, 0.04%)</title><rect x="850.3" y="373" width="0.5" height="15.0" fill="rgb(250,130,43)" rx="2" ry="2" />
+<text  x="853.32" y="383.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (1 samples, 0.04%)</title><rect x="583.8" y="485" width="0.5" height="15.0" fill="rgb(244,224,1)" rx="2" ry="2" />
+<text  x="586.75" y="495.5" ></text>
+</g>
+<g >
+<title>__entry_text_start (2 samples, 0.09%)</title><rect x="846.3" y="421" width="1.0" height="15.0" fill="rgb(205,62,30)" rx="2" ry="2" />
+<text  x="849.26" y="431.5" ></text>
+</g>
+<g >
+<title>mod_lruvec_state (3 samples, 0.13%)</title><rect x="942.2" y="277" width="1.5" height="15.0" fill="rgb(234,72,48)" rx="2" ry="2" />
+<text  x="945.22" y="287.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.Array.subscript.getter : (Swift.Int) -&gt; A (289 samples, 12.44%)</title><rect x="655.9" y="485" width="146.7" height="15.0" fill="rgb(249,70,11)" rx="2" ry="2" />
+<text  x="658.85" y="495.5" >generic specializa..</text>
+</g>
+<g >
+<title>swift_bridgeObjectRelease_n (1 samples, 0.04%)</title><rect x="1020.9" y="485" width="0.5" height="15.0" fill="rgb(249,84,10)" rx="2" ry="2" />
+<text  x="1023.92" y="495.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (1 samples, 0.04%)</title><rect x="907.2" y="293" width="0.5" height="15.0" fill="rgb(249,89,15)" rx="2" ry="2" />
+<text  x="910.19" y="303.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.ArraySlice._copyToContiguousArray() -&gt; Swift.ContiguousArray&lt;A&gt; (1 samples, 0.04%)</title><rect x="640.1" y="453" width="0.5" height="15.0" fill="rgb(215,25,50)" rx="2" ry="2" />
+<text  x="643.11" y="463.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.ArraySlice._copyContents(initializing: Swift.UnsafeMutableBufferPointer&lt;A&gt;) -&gt; (Swift.IndexingIterator&lt;Swift.ArraySlice&lt;A&gt;&gt;, Swift.Int) (1 samples, 0.04%)</title><rect x="640.1" y="405" width="0.5" height="15.0" fill="rgb(206,9,41)" rx="2" ry="2" />
+<text  x="643.11" y="415.5" ></text>
+</g>
+<g >
+<title>Foundation.Data._Representation.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (27 samples, 1.16%)</title><rect x="568.5" y="453" width="13.7" height="15.0" fill="rgb(237,14,49)" rx="2" ry="2" />
+<text  x="571.52" y="463.5" ></text>
+</g>
+<g >
+<title>blk_mq_get_tag (1 samples, 0.04%)</title><rect x="956.4" y="229" width="0.5" height="15.0" fill="rgb(246,42,7)" rx="2" ry="2" />
+<text  x="959.44" y="239.5" ></text>
+</g>
+<g >
+<title>xas_descend (1 samples, 0.04%)</title><rect x="934.1" y="261" width="0.5" height="15.0" fill="rgb(247,6,28)" rx="2" ry="2" />
+<text  x="937.10" y="271.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.Int?&gt; of Swift.String.UTF8View.withContiguousStorageIfAvailable&lt;A&gt;((Swift.UnsafeBufferPointer&lt;Swift.UInt8&gt;) throws -&gt; A) throws -&gt; A? (4 samples, 0.17%)</title><rect x="611.2" y="469" width="2.0" height="15.0" fill="rgb(240,41,46)" rx="2" ry="2" />
+<text  x="614.17" y="479.5" ></text>
+</g>
+<g >
+<title>__next_zones_zonelist (1 samples, 0.04%)</title><rect x="946.3" y="261" width="0.5" height="15.0" fill="rgb(210,27,53)" rx="2" ry="2" />
+<text  x="949.28" y="271.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (2 samples, 0.09%)</title><rect x="1097.1" y="421" width="1.0" height="15.0" fill="rgb(242,10,1)" rx="2" ry="2" />
+<text  x="1100.08" y="431.5" ></text>
+</g>
+<g >
+<title>main (13 samples, 0.56%)</title><rect x="15.6" y="549" width="6.6" height="15.0" fill="rgb(234,110,8)" rx="2" ry="2" />
+<text  x="18.59" y="559.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Swift._copyCollectionToContiguousArray&lt;A where A: Swift.Collection&gt;(A) -&gt; Swift.ContiguousArray&lt;A.Element&gt; (1 samples, 0.04%)</title><rect x="1183.9" y="501" width="0.5" height="15.0" fill="rgb(253,125,54)" rx="2" ry="2" />
+<text  x="1186.91" y="511.5" ></text>
+</g>
+<g >
+<title>schedule (16 samples, 0.69%)</title><rect x="913.8" y="293" width="8.1" height="15.0" fill="rgb(221,94,35)" rx="2" ry="2" />
+<text  x="916.79" y="303.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (1 samples, 0.04%)</title><rect x="1183.4" y="501" width="0.5" height="15.0" fill="rgb(233,80,43)" rx="2" ry="2" />
+<text  x="1186.40" y="511.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (11 samples, 0.47%)</title><rect x="650.3" y="389" width="5.6" height="15.0" fill="rgb(227,23,15)" rx="2" ry="2" />
+<text  x="653.27" y="399.5" ></text>
+</g>
+<g >
+<title>update_cfs_group (1 samples, 0.04%)</title><rect x="1097.1" y="309" width="0.5" height="15.0" fill="rgb(237,58,46)" rx="2" ry="2" />
+<text  x="1100.08" y="319.5" ></text>
+</g>
+<g >
+<title>getname_flags.part.0 (3 samples, 0.13%)</title><rect x="983.3" y="373" width="1.6" height="15.0" fill="rgb(213,221,26)" rx="2" ry="2" />
+<text  x="986.35" y="383.5" ></text>
+</g>
+<g >
+<title>amdgpu_irq_dispatch (1 samples, 0.04%)</title><rect x="583.8" y="357" width="0.5" height="15.0" fill="rgb(251,204,5)" rx="2" ry="2" />
+<text  x="586.75" y="367.5" ></text>
+</g>
+<g >
+<title>__GI___write (1 samples, 0.04%)</title><rect x="991.0" y="373" width="0.5" height="15.0" fill="rgb(218,190,4)" rx="2" ry="2" />
+<text  x="993.96" y="383.5" ></text>
+</g>
+<g >
+<title>llist_add_batch (1 samples, 0.04%)</title><rect x="1097.6" y="309" width="0.5" height="15.0" fill="rgb(209,180,19)" rx="2" ry="2" />
+<text  x="1100.59" y="319.5" ></text>
+</g>
+<g >
+<title>native_write_msr (15 samples, 0.65%)</title><rect x="913.8" y="197" width="7.6" height="15.0" fill="rgb(234,102,18)" rx="2" ry="2" />
+<text  x="916.79" y="207.5" ></text>
+</g>
+<g >
+<title>_swift_stdlib_malloc_size (3 samples, 0.13%)</title><rect x="645.7" y="405" width="1.5" height="15.0" fill="rgb(208,107,0)" rx="2" ry="2" />
+<text  x="648.70" y="415.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.04%)</title><rect x="1183.9" y="453" width="0.5" height="15.0" fill="rgb(227,80,54)" rx="2" ry="2" />
+<text  x="1186.91" y="463.5" ></text>
+</g>
+<g >
+<title>ext4_file_read_iter (3 samples, 0.13%)</title><rect x="857.4" y="357" width="1.6" height="15.0" fill="rgb(240,228,25)" rx="2" ry="2" />
+<text  x="860.43" y="367.5" ></text>
+</g>
+<g >
+<title>bpf_lsm_inode_getattr (1 samples, 0.04%)</title><rect x="986.9" y="341" width="0.5" height="15.0" fill="rgb(231,141,5)" rx="2" ry="2" />
+<text  x="989.90" y="351.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateConcreteTypeFromMangledName (2 samples, 0.09%)</title><rect x="599.0" y="357" width="1.0" height="15.0" fill="rgb(230,208,13)" rx="2" ry="2" />
+<text  x="601.98" y="367.5" ></text>
+</g>
+<g >
+<title>__memmove_sse2_unaligned_erms (2 samples, 0.09%)</title><rect x="598.0" y="357" width="1.0" height="15.0" fill="rgb(217,34,21)" rx="2" ry="2" />
+<text  x="600.97" y="367.5" ></text>
+</g>
+<g >
+<title>__fstatat (13 samples, 0.56%)</title><rect x="982.8" y="453" width="6.6" height="15.0" fill="rgb(212,147,7)" rx="2" ry="2" />
+<text  x="985.84" y="463.5" ></text>
+</g>
+<g >
+<title>Foundation.__DataStorage.withUnsafeBytes&lt;A&gt;(in: Swift.Range&lt;Swift.Int&gt;, apply: (Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (4 samples, 0.17%)</title><rect x="636.0" y="357" width="2.1" height="15.0" fill="rgb(253,141,16)" rx="2" ry="2" />
+<text  x="639.05" y="367.5" ></text>
+</g>
+<g >
+<title>folio_mark_accessed (2 samples, 0.09%)</title><rect x="961.0" y="341" width="1.0" height="15.0" fill="rgb(236,199,15)" rx="2" ry="2" />
+<text  x="964.01" y="351.5" ></text>
+</g>
+<g >
+<title>__softirqentry_text_start (1 samples, 0.04%)</title><rect x="967.1" y="293" width="0.5" height="15.0" fill="rgb(234,89,7)" rx="2" ry="2" />
+<text  x="970.10" y="303.5" ></text>
+</g>
+<g >
+<title>task_tick_fair (1 samples, 0.04%)</title><rect x="1097.1" y="325" width="0.5" height="15.0" fill="rgb(217,200,23)" rx="2" ry="2" />
+<text  x="1100.08" y="335.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (4 samples, 0.17%)</title><rect x="584.3" y="469" width="2.0" height="15.0" fill="rgb(222,195,38)" rx="2" ry="2" />
+<text  x="587.26" y="479.5" ></text>
+</g>
+<g >
+<title>amd_pmu_enable_all (15 samples, 0.65%)</title><rect x="913.8" y="229" width="7.6" height="15.0" fill="rgb(229,85,52)" rx="2" ry="2" />
+<text  x="916.79" y="239.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (1 samples, 0.04%)</title><rect x="1171.2" y="341" width="0.5" height="15.0" fill="rgb(250,172,30)" rx="2" ry="2" />
+<text  x="1174.21" y="351.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (1 samples, 0.04%)</title><rect x="1171.2" y="373" width="0.5" height="15.0" fill="rgb(221,121,54)" rx="2" ry="2" />
+<text  x="1174.21" y="383.5" ></text>
+</g>
+<g >
+<title>main (1 samples, 0.04%)</title><rect x="12.0" y="549" width="0.5" height="15.0" fill="rgb(247,83,21)" rx="2" ry="2" />
+<text  x="15.03" y="559.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (2 samples, 0.09%)</title><rect x="618.8" y="437" width="1.0" height="15.0" fill="rgb(227,15,20)" rx="2" ry="2" />
+<text  x="621.79" y="447.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.Int&gt; of Swift._allocateUninitializedArray&lt;A&gt;(Builtin.Word) -&gt; ([A], Builtin.RawPointer) (4 samples, 0.17%)</title><rect x="613.2" y="485" width="2.0" height="15.0" fill="rgb(216,50,17)" rx="2" ry="2" />
+<text  x="616.20" y="495.5" ></text>
+</g>
+<g >
+<title>xas_store (2 samples, 0.09%)</title><rect x="935.1" y="277" width="1.0" height="15.0" fill="rgb(241,64,1)" rx="2" ry="2" />
+<text  x="938.11" y="287.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (235 samples, 10.11%)</title><rect x="848.3" y="421" width="119.3" height="15.0" fill="rgb(220,138,21)" rx="2" ry="2" />
+<text  x="851.29" y="431.5" >entry_SYSCALL_..</text>
+</g>
+<g >
+<title>tryCast (1 samples, 0.04%)</title><rect x="22.2" y="549" width="0.5" height="15.0" fill="rgb(239,160,35)" rx="2" ry="2" />
+<text  x="25.19" y="559.5" ></text>
+</g>
+<g >
+<title>avc_has_perm (1 samples, 0.04%)</title><rect x="987.4" y="325" width="0.5" height="15.0" fill="rgb(206,216,15)" rx="2" ry="2" />
+<text  x="990.41" y="335.5" ></text>
+</g>
+<g >
+<title>get_page_from_freelist (5 samples, 0.22%)</title><rect x="943.7" y="277" width="2.6" height="15.0" fill="rgb(209,10,13)" rx="2" ry="2" />
+<text  x="946.74" y="287.5" ></text>
+</g>
+<g >
+<title>xas_start (1 samples, 0.04%)</title><rect x="933.6" y="245" width="0.5" height="15.0" fill="rgb(206,102,33)" rx="2" ry="2" />
+<text  x="936.59" y="255.5" ></text>
+</g>
+<g >
+<title>begin_new_exec (5 samples, 0.22%)</title><rect x="1187.5" y="469" width="2.5" height="15.0" fill="rgb(214,141,43)" rx="2" ry="2" />
+<text  x="1190.46" y="479.5" ></text>
+</g>
+<g >
+<title>dl_main (1 samples, 0.04%)</title><rect x="1178.8" y="517" width="0.5" height="15.0" fill="rgb(211,203,48)" rx="2" ry="2" />
+<text  x="1181.83" y="527.5" ></text>
+</g>
+<g >
+<title>blk_mq_sched_try_insert_merge (1 samples, 0.04%)</title><rect x="951.9" y="213" width="0.5" height="15.0" fill="rgb(249,29,10)" rx="2" ry="2" />
+<text  x="954.87" y="223.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Foundation.Data._Representation&gt; of protocol witness for Foundation.ContiguousBytes.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A1) throws -&gt; A1 in conformance &lt;A where A == Swift.UInt8&gt; Swift.ArraySlice&lt;A&gt; : Foundation.ContiguousBytes in Foundation (18 samples, 0.77%)</title><rect x="590.9" y="453" width="9.1" height="15.0" fill="rgb(252,86,1)" rx="2" ry="2" />
+<text  x="593.86" y="463.5" ></text>
+</g>
+<g >
+<title>_start (2,278 samples, 98.02%)</title><rect x="22.7" y="565" width="1156.6" height="15.0" fill="rgb(226,204,34)" rx="2" ry="2" />
+<text  x="25.69" y="575.5" >_start</text>
+</g>
+<g >
+<title>x86_pmu_enable_event (15 samples, 0.65%)</title><rect x="913.8" y="213" width="7.6" height="15.0" fill="rgb(215,176,52)" rx="2" ry="2" />
+<text  x="916.79" y="223.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (2 samples, 0.09%)</title><rect x="1170.7" y="405" width="1.0" height="15.0" fill="rgb(239,62,23)" rx="2" ry="2" />
+<text  x="1173.71" y="415.5" ></text>
+</g>
+<g >
+<title>swift::MetadataCacheEntryBase&lt;(anonymous namespace)::GenericCacheEntry, void const*&gt;::awaitSatisfyingState (1 samples, 0.04%)</title><rect x="14.6" y="501" width="0.5" height="15.0" fill="rgb(208,143,7)" rx="2" ry="2" />
+<text  x="17.57" y="511.5" ></text>
+</g>
+<g >
+<title>swift_retain (1 samples, 0.04%)</title><rect x="1021.4" y="469" width="0.5" height="15.0" fill="rgb(229,165,10)" rx="2" ry="2" />
+<text  x="1024.43" y="479.5" ></text>
+</g>
+<g >
+<title>sbitmap_get (1 samples, 0.04%)</title><rect x="956.4" y="213" width="0.5" height="15.0" fill="rgb(214,52,33)" rx="2" ry="2" />
+<text  x="959.44" y="223.5" ></text>
+</g>
+<g >
+<title>xas_load (6 samples, 0.26%)</title><rect x="931.0" y="261" width="3.1" height="15.0" fill="rgb(224,138,28)" rx="2" ry="2" />
+<text  x="934.05" y="271.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.String, main.(Product in _12232F587A4C5CD8B1EEDF696793A4FC)&gt; of Swift._NativeDictionary.setValue(_: __owned B, forKey: A, isUnique: Swift.Bool) -&gt; () (5 samples, 0.22%)</title><rect x="615.7" y="469" width="2.6" height="15.0" fill="rgb(223,129,22)" rx="2" ry="2" />
+<text  x="618.74" y="479.5" ></text>
+</g>
+<g >
+<title>swift_allocObject (1 samples, 0.04%)</title><rect x="1183.9" y="485" width="0.5" height="15.0" fill="rgb(251,224,22)" rx="2" ry="2" />
+<text  x="1186.91" y="495.5" ></text>
+</g>
+<g >
+<title>ext4_getattr (1 samples, 0.04%)</title><rect x="985.9" y="341" width="0.5" height="15.0" fill="rgb(215,57,17)" rx="2" ry="2" />
+<text  x="988.89" y="351.5" ></text>
+</g>
+<g >
+<title>handle_irq_event (1 samples, 0.04%)</title><rect x="907.2" y="229" width="0.5" height="15.0" fill="rgb(243,65,29)" rx="2" ry="2" />
+<text  x="910.19" y="239.5" ></text>
+</g>
+<g >
+<title>__schedule (16 samples, 0.69%)</title><rect x="913.8" y="277" width="8.1" height="15.0" fill="rgb(217,219,36)" rx="2" ry="2" />
+<text  x="916.79" y="287.5" ></text>
+</g>
+<g >
+<title>partial apply forwarder for reabstraction thunk helper from @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@error @owned Swift.Error) to @escaping @callee_guaranteed (@unowned Swift.UnsafeRawBufferPointer) -&gt; (@out (), @error @owned Swift.Error) (2 samples, 0.09%)</title><rect x="636.6" y="325" width="1.0" height="15.0" fill="rgb(244,181,2)" rx="2" ry="2" />
+<text  x="639.56" y="335.5" ></text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (1 samples, 0.04%)</title><rect x="967.6" y="421" width="0.5" height="15.0" fill="rgb(219,166,14)" rx="2" ry="2" />
+<text  x="970.61" y="431.5" ></text>
+</g>
+<g >
+<title>__handle_irq_event_percpu (1 samples, 0.04%)</title><rect x="907.2" y="213" width="0.5" height="15.0" fill="rgb(210,203,37)" rx="2" ry="2" />
+<text  x="910.19" y="223.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.Int&gt; of (extension in Swift):Swift.FixedWidthInteger.init(Swift.String) -&gt; A? (4 samples, 0.17%)</title><rect x="611.2" y="485" width="2.0" height="15.0" fill="rgb(228,19,14)" rx="2" ry="2" />
+<text  x="614.17" y="495.5" ></text>
+</g>
+<g >
+<title>dm_crtc_handle_vblank (1 samples, 0.04%)</title><rect x="1095.6" y="293" width="0.5" height="15.0" fill="rgb(240,217,35)" rx="2" ry="2" />
+<text  x="1098.56" y="303.5" ></text>
+</g>
+<g >
+<title>copy_page_to_iter (92 samples, 3.96%)</title><rect x="861.0" y="341" width="46.7" height="15.0" fill="rgb(230,151,2)" rx="2" ry="2" />
+<text  x="863.98" y="351.5" >copy..</text>
+</g>
+<g >
+<title>workingset_update_node (1 samples, 0.04%)</title><rect x="935.6" y="261" width="0.5" height="15.0" fill="rgb(223,149,51)" rx="2" ry="2" />
+<text  x="938.62" y="271.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irq (1 samples, 0.04%)</title><rect x="930.0" y="277" width="0.5" height="15.0" fill="rgb(252,167,36)" rx="2" ry="2" />
+<text  x="933.03" y="287.5" ></text>
+</g>
+<g >
+<title>workingset_refault (4 samples, 0.17%)</title><rect x="941.7" y="293" width="2.0" height="15.0" fill="rgb(208,194,20)" rx="2" ry="2" />
+<text  x="944.71" y="303.5" ></text>
+</g>
+<g >
+<title>inode_has_perm (2 samples, 0.09%)</title><rect x="987.9" y="325" width="1.0" height="15.0" fill="rgb(229,115,3)" rx="2" ry="2" />
+<text  x="990.92" y="335.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (1 samples, 0.04%)</title><rect x="1096.1" y="437" width="0.5" height="15.0" fill="rgb(239,117,18)" rx="2" ry="2" />
+<text  x="1099.07" y="447.5" ></text>
+</g>
+<g >
+<title>xas_descend (2 samples, 0.09%)</title><rect x="958.5" y="261" width="1.0" height="15.0" fill="rgb(227,49,40)" rx="2" ry="2" />
+<text  x="961.47" y="271.5" ></text>
+</g>
+<g >
+<title>_int_free (10 samples, 0.43%)</title><rect x="1006.2" y="437" width="5.1" height="15.0" fill="rgb(227,66,28)" rx="2" ry="2" />
+<text  x="1009.20" y="447.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (2 samples, 0.09%)</title><rect x="618.8" y="405" width="1.0" height="15.0" fill="rgb(242,204,28)" rx="2" ry="2" />
+<text  x="621.79" y="415.5" ></text>
+</g>
+<g >
+<title>__GI_fwrite (1 samples, 0.04%)</title><rect x="991.0" y="453" width="0.5" height="15.0" fill="rgb(246,67,29)" rx="2" ry="2" />
+<text  x="993.96" y="463.5" ></text>
+</g>
+<g >
+<title>ksys_read (230 samples, 9.90%)</title><rect x="849.3" y="389" width="116.8" height="15.0" fill="rgb(227,103,20)" rx="2" ry="2" />
+<text  x="852.30" y="399.5" >ksys_read</text>
+</g>
+<g >
+<title>_swift_release_dealloc (12 samples, 0.52%)</title><rect x="602.5" y="437" width="6.1" height="15.0" fill="rgb(251,105,26)" rx="2" ry="2" />
+<text  x="605.54" y="447.5" ></text>
+</g>
+<g >
+<title>bpf_lsm_file_permission (2 samples, 0.09%)</title><rect x="964.6" y="341" width="1.0" height="15.0" fill="rgb(243,61,16)" rx="2" ry="2" />
+<text  x="967.56" y="351.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (2 samples, 0.09%)</title><rect x="1170.7" y="453" width="1.0" height="15.0" fill="rgb(215,229,40)" rx="2" ry="2" />
+<text  x="1173.71" y="463.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.ArraySlice._copyToContiguousArray() -&gt; Swift.ContiguousArray&lt;A&gt; (1 samples, 0.04%)</title><rect x="1183.9" y="517" width="0.5" height="15.0" fill="rgb(209,142,2)" rx="2" ry="2" />
+<text  x="1186.91" y="527.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateCanonicalPrespecializedGenericMetadata (1 samples, 0.04%)</title><rect x="22.2" y="533" width="0.5" height="15.0" fill="rgb(243,67,49)" rx="2" ry="2" />
+<text  x="25.19" y="543.5" ></text>
+</g>
+<g >
+<title>blk_update_request (1 samples, 0.04%)</title><rect x="1096.1" y="357" width="0.5" height="15.0" fill="rgb(219,206,32)" rx="2" ry="2" />
+<text  x="1099.07" y="367.5" ></text>
+</g>
+<g >
+<title>folio_mapping (1 samples, 0.04%)</title><rect x="938.7" y="245" width="0.5" height="15.0" fill="rgb(240,146,32)" rx="2" ry="2" />
+<text  x="941.67" y="255.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[0] = Owned To Guaranteed, Arg[2] = Dead&gt; of Foundation.Data.Iterator.init(_: Foundation.Data, at: Swift.Int) -&gt; Foundation.Data.Iterator (3 samples, 0.13%)</title><rect x="14.1" y="549" width="1.5" height="15.0" fill="rgb(209,50,30)" rx="2" ry="2" />
+<text  x="17.06" y="559.5" ></text>
+</g>
+<g >
+<title>(extension in Foundation):Foundation.DataProtocol&lt; where A: Foundation.ContiguousBytes&gt;.copyBytes&lt;A, B where B1: Swift.RangeExpression, A.Swift.Collection.Index == B1.Bound&gt;(to: Swift.UnsafeMutableBufferPointer&lt;A1&gt;, from: B1) -&gt; () (8 samples, 0.34%)</title><rect x="634.5" y="421" width="4.1" height="15.0" fill="rgb(251,122,46)" rx="2" ry="2" />
+<text  x="637.53" y="431.5" ></text>
+</g>
+<g >
+<title>static main.(State in _12232F587A4C5CD8B1EEDF696793A4FC).__derived_enum_equals(main.(State in _12232F587A4C5CD8B1EEDF696793A4FC), main.(State in _12232F587A4C5CD8B1EEDF696793A4FC)) -&gt; Swift.Bool (19 samples, 0.82%)</title><rect x="991.5" y="485" width="9.6" height="15.0" fill="rgb(209,180,26)" rx="2" ry="2" />
+<text  x="994.47" y="495.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;[Swift.Int]&gt; of (extension in Swift):Swift.Sequence&lt; where A.Element: Swift.Comparable&gt;.max() -&gt; A.Element? (4 samples, 0.17%)</title><rect x="835.1" y="485" width="2.0" height="15.0" fill="rgb(228,148,40)" rx="2" ry="2" />
+<text  x="838.09" y="495.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (1 samples, 0.04%)</title><rect x="585.8" y="389" width="0.5" height="15.0" fill="rgb(226,23,49)" rx="2" ry="2" />
+<text  x="588.78" y="399.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="937.7" y="245" width="0.5" height="15.0" fill="rgb(230,195,0)" rx="2" ry="2" />
+<text  x="940.65" y="255.5" ></text>
+</g>
+<g >
+<title>main.NSDataReadResult.toData() -&gt; Foundation.Data (2 samples, 0.09%)</title><rect x="989.4" y="469" width="1.1" height="15.0" fill="rgb(216,79,42)" rx="2" ry="2" />
+<text  x="992.44" y="479.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (3 samples, 0.13%)</title><rect x="1096.6" y="453" width="1.5" height="15.0" fill="rgb(221,29,42)" rx="2" ry="2" />
+<text  x="1099.57" y="463.5" ></text>
+</g>
+<g >
+<title>partial apply forwarder for closure #1 (Swift.UnsafeRawBufferPointer) -&gt; () in (extension in Foundation):Foundation.DataProtocol&lt; where A: Foundation.ContiguousBytes&gt;.copyBytes&lt;A, B where B1: Swift.RangeExpression, A.Swift.Collection.Index == B1.Bound&gt;(to: Swift.UnsafeMutableBufferPointer&lt;A1&gt;, from: B1) -&gt; () (2 samples, 0.09%)</title><rect x="636.6" y="309" width="1.0" height="15.0" fill="rgb(224,125,33)" rx="2" ry="2" />
+<text  x="639.56" y="319.5" ></text>
+</g>
+<g >
+<title>protocol witness for Swift.RangeExpression.relative&lt;A where A1: Swift.Collection, A.Bound == A1.Index&gt;(to: A1) -&gt; Swift.Range&lt;A.Bound&gt; in conformance Swift.Range&lt;A&gt; : Swift.RangeExpression in Swift (1 samples, 0.04%)</title><rect x="635.0" y="389" width="0.5" height="15.0" fill="rgb(212,208,13)" rx="2" ry="2" />
+<text  x="638.03" y="399.5" ></text>
+</g>
+<g >
+<title>closure #1 (Swift.UnsafeRawBufferPointer) -&gt; () in (extension in Foundation):Foundation.DataProtocol&lt; where A: Foundation.ContiguousBytes&gt;.copyBytes&lt;A, B where B1: Swift.RangeExpression, A.Swift.Collection.Index == B1.Bound&gt;(to: Swift.UnsafeMutableBufferPointer&lt;A1&gt;, from: B1) -&gt; () (2 samples, 0.09%)</title><rect x="636.6" y="293" width="1.0" height="15.0" fill="rgb(235,173,21)" rx="2" ry="2" />
+<text  x="639.56" y="303.5" ></text>
+</g>
+<g >
+<title>__free (3 samples, 0.13%)</title><rect x="1181.9" y="485" width="1.5" height="15.0" fill="rgb(236,161,33)" rx="2" ry="2" />
+<text  x="1184.88" y="495.5" ></text>
+</g>
+<g >
+<title>swift_release@plt (13 samples, 0.56%)</title><rect x="1098.1" y="485" width="6.6" height="15.0" fill="rgb(214,219,19)" rx="2" ry="2" />
+<text  x="1101.10" y="495.5" ></text>
+</g>
+<g >
+<title>_dl_catch_exception (1 samples, 0.04%)</title><rect x="1178.8" y="485" width="0.5" height="15.0" fill="rgb(243,120,5)" rx="2" ry="2" />
+<text  x="1181.83" y="495.5" ></text>
+</g>
+<g >
+<title>charge_memcg (5 samples, 0.22%)</title><rect x="925.5" y="261" width="2.5" height="15.0" fill="rgb(236,14,10)" rx="2" ry="2" />
+<text  x="928.46" y="271.5" ></text>
+</g>
+<g >
+<title>amdgpu_dm_irq_handler (1 samples, 0.04%)</title><rect x="1095.6" y="325" width="0.5" height="15.0" fill="rgb(249,42,28)" rx="2" ry="2" />
+<text  x="1098.56" y="335.5" ></text>
+</g>
+<g >
+<title>Foundation.Data._Representation.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (4 samples, 0.17%)</title><rect x="636.0" y="373" width="2.1" height="15.0" fill="rgb(214,135,21)" rx="2" ry="2" />
+<text  x="639.05" y="383.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.04%)</title><rect x="639.6" y="405" width="0.5" height="15.0" fill="rgb(228,99,17)" rx="2" ry="2" />
+<text  x="642.60" y="415.5" ></text>
+</g>
+<g >
+<title>handle_edge_irq (1 samples, 0.04%)</title><rect x="907.2" y="245" width="0.5" height="15.0" fill="rgb(231,126,47)" rx="2" ry="2" />
+<text  x="910.19" y="255.5" ></text>
+</g>
+<g >
+<title>__filemap_add_folio (27 samples, 1.16%)</title><rect x="922.4" y="293" width="13.7" height="15.0" fill="rgb(239,204,6)" rx="2" ry="2" />
+<text  x="925.42" y="303.5" ></text>
+</g>
+<g >
+<title>closure #1 (Swift.UnsafeRawBufferPointer) -&gt; Swift.String? in (extension in Foundation):Swift.String.init(data: __shared Foundation.Data, encoding: (extension in Foundation):Swift.String.Encoding) -&gt; Swift.String? (1 samples, 0.04%)</title><rect x="573.6" y="389" width="0.5" height="15.0" fill="rgb(239,140,48)" rx="2" ry="2" />
+<text  x="576.60" y="399.5" ></text>
+</g>
+<g >
+<title>ktime_get (1 samples, 0.04%)</title><rect x="955.9" y="261" width="0.5" height="15.0" fill="rgb(232,16,4)" rx="2" ry="2" />
+<text  x="958.93" y="271.5" ></text>
+</g>
+<g >
+<title>dput (1 samples, 0.04%)</title><rect x="855.4" y="341" width="0.5" height="15.0" fill="rgb(207,11,10)" rx="2" ry="2" />
+<text  x="858.40" y="351.5" ></text>
+</g>
+<g >
+<title>_swift_getGenericMetadata (1 samples, 0.04%)</title><rect x="22.2" y="517" width="0.5" height="15.0" fill="rgb(227,32,6)" rx="2" ry="2" />
+<text  x="25.19" y="527.5" ></text>
+</g>
+<g >
+<title>swift_slowAlloc (3 samples, 0.13%)</title><rect x="609.1" y="437" width="1.6" height="15.0" fill="rgb(230,196,49)" rx="2" ry="2" />
+<text  x="612.14" y="447.5" ></text>
+</g>
+<g >
+<title>__check_block_validity.constprop.0 (2 samples, 0.09%)</title><rect x="954.9" y="261" width="1.0" height="15.0" fill="rgb(224,153,22)" rx="2" ry="2" />
+<text  x="957.91" y="271.5" ></text>
+</g>
+<g >
+<title>outlined consume of Foundation.Data._Representation (1 samples, 0.04%)</title><rect x="1187.0" y="565" width="0.5" height="15.0" fill="rgb(227,56,28)" rx="2" ry="2" />
+<text  x="1189.95" y="575.5" ></text>
+</g>
+<g >
+<title>Swift.Hasher.init(_seed: Swift.Int) -&gt; Swift.Hasher (2 samples, 0.09%)</title><rect x="11.0" y="533" width="1.0" height="15.0" fill="rgb(232,13,51)" rx="2" ry="2" />
+<text  x="14.02" y="543.5" ></text>
+</g>
+<g >
+<title>Foundation.Data.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (4 samples, 0.17%)</title><rect x="636.0" y="389" width="2.1" height="15.0" fill="rgb(220,141,1)" rx="2" ry="2" />
+<text  x="639.05" y="399.5" ></text>
+</g>
+<g >
+<title>ext4_mpage_readpages (14 samples, 0.60%)</title><rect x="952.4" y="293" width="7.1" height="15.0" fill="rgb(211,139,35)" rx="2" ry="2" />
+<text  x="955.38" y="303.5" ></text>
+</g>
+<g >
+<title>swift_once (1 samples, 0.04%)</title><rect x="15.1" y="501" width="0.5" height="15.0" fill="rgb(217,157,27)" rx="2" ry="2" />
+<text  x="18.08" y="511.5" ></text>
+</g>
+<g >
+<title>swift::RefCounts&lt;swift::RefCountBitsT&lt; (1 samples, 0.04%)</title><rect x="1184.4" y="549" width="0.5" height="15.0" fill="rgb(236,56,16)" rx="2" ry="2" />
+<text  x="1187.41" y="559.5" ></text>
+</g>
+<g >
+<title>Swift._stringCompare(_: Swift._StringGuts, _: Swift._StringGuts, expecting: Swift._StringComparisonResult) -&gt; Swift.Bool (1 samples, 0.04%)</title><rect x="843.7" y="405" width="0.5" height="15.0" fill="rgb(209,102,30)" rx="2" ry="2" />
+<text  x="846.72" y="415.5" ></text>
+</g>
+<g >
+<title>__rcu_read_unlock (1 samples, 0.04%)</title><rect x="987.4" y="309" width="0.5" height="15.0" fill="rgb(214,229,41)" rx="2" ry="2" />
+<text  x="990.41" y="319.5" ></text>
+</g>
+<g >
+<title>swift_beginAccess (2 samples, 0.09%)</title><rect x="989.4" y="405" width="1.1" height="15.0" fill="rgb(206,139,17)" rx="2" ry="2" />
+<text  x="992.44" y="415.5" ></text>
+</g>
+<g >
+<title>_dl_start (1 samples, 0.04%)</title><rect x="1178.8" y="549" width="0.5" height="15.0" fill="rgb(233,188,1)" rx="2" ry="2" />
+<text  x="1181.83" y="559.5" ></text>
+</g>
+<g >
+<title>__free (10 samples, 0.43%)</title><rect x="1006.2" y="453" width="5.1" height="15.0" fill="rgb(224,41,18)" rx="2" ry="2" />
+<text  x="1009.20" y="463.5" ></text>
+</g>
+<g >
+<title>handle_edge_irq (1 samples, 0.04%)</title><rect x="1095.6" y="421" width="0.5" height="15.0" fill="rgb(228,224,39)" rx="2" ry="2" />
+<text  x="1098.56" y="431.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of protocol witness for Swift.Sequence._copyToContiguousArray() -&gt; Swift.ContiguousArray&lt;A.Element&gt; in conformance Swift.ArraySlice&lt;A&gt; : Swift.Sequence in Swift (1 samples, 0.04%)</title><rect x="1183.9" y="533" width="0.5" height="15.0" fill="rgb(225,148,25)" rx="2" ry="2" />
+<text  x="1186.91" y="543.5" ></text>
+</g>
+<g >
+<title>__update_load_avg_cfs_rq (1 samples, 0.04%)</title><rect x="1096.6" y="373" width="0.5" height="15.0" fill="rgb(249,173,54)" rx="2" ry="2" />
+<text  x="1099.57" y="383.5" ></text>
+</g>
+<g >
+<title>vfs_fstatat (11 samples, 0.47%)</title><rect x="983.3" y="389" width="5.6" height="15.0" fill="rgb(223,39,33)" rx="2" ry="2" />
+<text  x="986.35" y="399.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (1 samples, 0.04%)</title><rect x="937.7" y="213" width="0.5" height="15.0" fill="rgb(240,102,17)" rx="2" ry="2" />
+<text  x="940.65" y="223.5" ></text>
+</g>
+<g >
+<title>ext4_file_getattr (2 samples, 0.09%)</title><rect x="985.4" y="357" width="1.0" height="15.0" fill="rgb(240,77,26)" rx="2" ry="2" />
+<text  x="988.38" y="367.5" ></text>
+</g>
+<g >
+<title>__handle_irq_event_percpu (1 samples, 0.04%)</title><rect x="1095.6" y="389" width="0.5" height="15.0" fill="rgb(224,81,9)" rx="2" ry="2" />
+<text  x="1098.56" y="399.5" ></text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (4 samples, 0.17%)</title><rect x="584.3" y="453" width="2.0" height="15.0" fill="rgb(225,212,54)" rx="2" ry="2" />
+<text  x="587.26" y="463.5" ></text>
+</g>
+<g >
+<title>__free (1 samples, 0.04%)</title><rect x="639.6" y="421" width="0.5" height="15.0" fill="rgb(211,198,33)" rx="2" ry="2" />
+<text  x="642.60" y="431.5" ></text>
+</g>
+<g >
+<title>Foundation.__DataStorage.init(bytes: Swift.UnsafeMutableRawPointer?, length: Swift.Int, copy: Swift.Bool, deallocator: ((Swift.UnsafeMutableRawPointer, Swift.Int) -&gt; ())?, offset: Swift.Int) -&gt; Foundation.__DataStorage (2 samples, 0.09%)</title><rect x="989.4" y="437" width="1.1" height="15.0" fill="rgb(245,175,9)" rx="2" ry="2" />
+<text  x="992.44" y="447.5" ></text>
+</g>
+<g >
+<title>__free (1 samples, 0.04%)</title><rect x="1184.4" y="517" width="0.5" height="15.0" fill="rgb(205,210,1)" rx="2" ry="2" />
+<text  x="1187.41" y="527.5" ></text>
+</g>
+<g >
+<title>swift_release (2 samples, 0.09%)</title><rect x="603.0" y="405" width="1.1" height="15.0" fill="rgb(207,17,16)" rx="2" ry="2" />
+<text  x="606.05" y="415.5" ></text>
+</g>
+<g >
+<title>security_file_permission (4 samples, 0.17%)</title><rect x="964.1" y="357" width="2.0" height="15.0" fill="rgb(221,216,47)" rx="2" ry="2" />
+<text  x="967.05" y="367.5" ></text>
+</g>
+<g >
+<title>protocol witness for Swift.Hashable._rawHashValue(seed: Swift.Int) -&gt; Swift.Int in conformance Swift.String : Swift.Hashable in Swift (4 samples, 0.17%)</title><rect x="615.7" y="437" width="2.1" height="15.0" fill="rgb(227,206,13)" rx="2" ry="2" />
+<text  x="618.74" y="447.5" ></text>
+</g>
+<g >
+<title>function signature specialization &lt;Arg[1] = Dead&gt; of generic specialization &lt;Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Foundation.Data.init&lt;A where A: Swift.Sequence, A.Element == Swift.UInt8&gt;(A) -&gt; Foundation.Data (48 samples, 2.07%)</title><rect x="586.8" y="469" width="24.4" height="15.0" fill="rgb(245,19,32)" rx="2" ry="2" />
+<text  x="589.80" y="479.5" >f..</text>
+</g>
+<g >
+<title>protocol witness for Swift.Collection.startIndex.getter : A.Index in conformance Foundation.Data : Swift.Collection in Foundation (1 samples, 0.04%)</title><rect x="637.1" y="261" width="0.5" height="15.0" fill="rgb(228,203,53)" rx="2" ry="2" />
+<text  x="640.07" y="271.5" ></text>
+</g>
+<g >
+<title>drm_handle_vblank (1 samples, 0.04%)</title><rect x="1095.6" y="277" width="0.5" height="15.0" fill="rgb(227,94,13)" rx="2" ry="2" />
+<text  x="1098.56" y="287.5" ></text>
+</g>
+<g >
+<title>__mem_cgroup_charge (8 samples, 0.34%)</title><rect x="925.0" y="277" width="4.0" height="15.0" fill="rgb(205,119,41)" rx="2" ry="2" />
+<text  x="927.96" y="287.5" ></text>
+</g>
+<g >
+<title>alloc_pages (1 samples, 0.04%)</title><rect x="946.8" y="293" width="0.5" height="15.0" fill="rgb(253,58,35)" rx="2" ry="2" />
+<text  x="949.79" y="303.5" ></text>
+</g>
+<g >
+<title>load_elf_binary (5 samples, 0.22%)</title><rect x="1187.5" y="485" width="2.5" height="15.0" fill="rgb(249,99,8)" rx="2" ry="2" />
+<text  x="1190.46" y="495.5" ></text>
+</g>
+<g >
+<title>Swift.UnsafeRawBufferPointer.count.getter : Swift.Int@plt (1 samples, 0.04%)</title><rect x="595.9" y="357" width="0.5" height="15.0" fill="rgb(222,80,46)" rx="2" ry="2" />
+<text  x="598.94" y="367.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (1 samples, 0.04%)</title><rect x="991.0" y="389" width="0.5" height="15.0" fill="rgb(243,111,48)" rx="2" ry="2" />
+<text  x="993.96" y="399.5" ></text>
+</g>
+<g >
+<title>asm_common_interrupt (1 samples, 0.04%)</title><rect x="1170.2" y="469" width="0.5" height="15.0" fill="rgb(226,144,30)" rx="2" ry="2" />
+<text  x="1173.20" y="479.5" ></text>
+</g>
+<g >
+<title>amdgpu_get_vblank_counter_kms (1 samples, 0.04%)</title><rect x="1095.6" y="245" width="0.5" height="15.0" fill="rgb(240,110,30)" rx="2" ry="2" />
+<text  x="1098.56" y="255.5" ></text>
+</g>
+<g >
+<title>__rcu_read_unlock (1 samples, 0.04%)</title><rect x="928.5" y="245" width="0.5" height="15.0" fill="rgb(242,15,21)" rx="2" ry="2" />
+<text  x="931.51" y="255.5" ></text>
+</g>
+<g >
+<title>openaux (1 samples, 0.04%)</title><rect x="1178.8" y="469" width="0.5" height="15.0" fill="rgb(238,49,54)" rx="2" ry="2" />
+<text  x="1181.83" y="479.5" ></text>
+</g>
+<g >
+<title>path_lookupat (1 samples, 0.04%)</title><rect x="986.4" y="341" width="0.5" height="15.0" fill="rgb(224,164,11)" rx="2" ry="2" />
+<text  x="989.39" y="351.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (1 samples, 0.04%)</title><rect x="937.7" y="165" width="0.5" height="15.0" fill="rgb(208,138,35)" rx="2" ry="2" />
+<text  x="940.65" y="175.5" ></text>
+</g>
+<g >
+<title>common_interrupt (1 samples, 0.04%)</title><rect x="583.8" y="469" width="0.5" height="15.0" fill="rgb(246,203,39)" rx="2" ry="2" />
+<text  x="586.75" y="479.5" ></text>
+</g>
+<g >
+<title>filemap_get_pages (105 samples, 4.52%)</title><rect x="907.7" y="341" width="53.3" height="15.0" fill="rgb(231,91,30)" rx="2" ry="2" />
+<text  x="910.69" y="351.5" >filem..</text>
+</g>
+<g >
+<title>native_write_msr (5 samples, 0.22%)</title><rect x="1187.5" y="405" width="2.5" height="15.0" fill="rgb(205,104,29)" rx="2" ry="2" />
+<text  x="1190.46" y="415.5" ></text>
+</g>
+<g >
+<title>prepare_alloc_pages.constprop.0 (1 samples, 0.04%)</title><rect x="946.3" y="277" width="0.5" height="15.0" fill="rgb(219,150,53)" rx="2" ry="2" />
+<text  x="949.28" y="287.5" ></text>
+</g>
+<g >
+<title>scsi_end_request (1 samples, 0.04%)</title><rect x="853.9" y="245" width="0.5" height="15.0" fill="rgb(245,124,23)" rx="2" ry="2" />
+<text  x="856.87" y="255.5" ></text>
+</g>
+<g >
+<title>handle_irq_event (1 samples, 0.04%)</title><rect x="583.8" y="421" width="0.5" height="15.0" fill="rgb(209,32,3)" rx="2" ry="2" />
+<text  x="586.75" y="431.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of protocol witness for Swift.Sequence._copyToContiguousArray() -&gt; Swift.ContiguousArray&lt;A.Element&gt; in conformance Swift.ArraySlice&lt;A&gt; : Swift.Sequence in Swift (1 samples, 0.04%)</title><rect x="640.1" y="469" width="0.5" height="15.0" fill="rgb(230,30,35)" rx="2" ry="2" />
+<text  x="643.11" y="479.5" ></text>
+</g>
+<g >
+<title>ata_scsi_queuecmd (5 samples, 0.22%)</title><rect x="949.3" y="133" width="2.6" height="15.0" fill="rgb(209,179,38)" rx="2" ry="2" />
+<text  x="952.33" y="143.5" ></text>
+</g>
+<g >
+<title>protocol witness for Swift.Sequence._copyToContiguousArray() -&gt; Swift.ContiguousArray&lt;A.Element&gt; in conformance Swift.String.UTF8View : Swift.Sequence in Swift (30 samples, 1.29%)</title><rect x="640.6" y="469" width="15.3" height="15.0" fill="rgb(214,7,26)" rx="2" ry="2" />
+<text  x="643.62" y="479.5" ></text>
+</g>
+<g >
+<title>_swift_release_dealloc (1 samples, 0.04%)</title><rect x="639.6" y="453" width="0.5" height="15.0" fill="rgb(233,18,47)" rx="2" ry="2" />
+<text  x="642.60" y="463.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.ArraySlice&lt;Swift.UInt8&gt;&gt; of Swift._copyCollectionToContiguousArray&lt;A where A: Swift.Collection&gt;(A) -&gt; Swift.ContiguousArray&lt;A.Element&gt; (1 samples, 0.04%)</title><rect x="640.1" y="437" width="0.5" height="15.0" fill="rgb(233,178,45)" rx="2" ry="2" />
+<text  x="643.11" y="447.5" ></text>
+</g>
+<g >
+<title>dispatch thunk of Swift.RangeExpression.relative&lt;A where A1: Swift.Collection, A.Bound == A1.Index&gt;(to: A1) -&gt; Swift.Range&lt;A.Bound&gt; (1 samples, 0.04%)</title><rect x="635.0" y="405" width="0.5" height="15.0" fill="rgb(234,74,53)" rx="2" ry="2" />
+<text  x="638.03" y="415.5" ></text>
+</g>
+<g >
+<title>Foundation.Data.init(bytesNoCopy: Swift.UnsafeMutableRawPointer, count: Swift.Int, deallocator: Foundation.Data.Deallocator) -&gt; Foundation.Data (2 samples, 0.09%)</title><rect x="989.4" y="453" width="1.1" height="15.0" fill="rgb(205,154,42)" rx="2" ry="2" />
+<text  x="992.44" y="463.5" ></text>
+</g>
+<g >
+<title>__malloc_usable_size (2 samples, 0.09%)</title><rect x="646.2" y="389" width="1.0" height="15.0" fill="rgb(219,3,19)" rx="2" ry="2" />
+<text  x="649.20" y="399.5" ></text>
+</g>
+<g >
+<title>Swift.String.hash(into: inout Swift.Hasher) -&gt; () (4 samples, 0.17%)</title><rect x="841.7" y="421" width="2.0" height="15.0" fill="rgb(240,60,40)" rx="2" ry="2" />
+<text  x="844.69" y="431.5" ></text>
+</g>
+<g >
+<title>__mod_node_page_state (1 samples, 0.04%)</title><rect x="941.2" y="213" width="0.5" height="15.0" fill="rgb(216,86,37)" rx="2" ry="2" />
+<text  x="944.20" y="223.5" ></text>
+</g>
+<g >
+<title>xa_load (1 samples, 0.04%)</title><rect x="935.6" y="229" width="0.5" height="15.0" fill="rgb(219,107,43)" rx="2" ry="2" />
+<text  x="938.62" y="239.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.Array._createNewBuffer(bufferIsUnique: Swift.Bool, minimumCapacity: Swift.Int, growForAppend: Swift.Bool) -&gt; () (2 samples, 0.09%)</title><rect x="618.8" y="469" width="1.0" height="15.0" fill="rgb(227,91,23)" rx="2" ry="2" />
+<text  x="621.79" y="479.5" ></text>
+</g>
+<g >
+<title>strncpy_from_user (1 samples, 0.04%)</title><rect x="984.4" y="357" width="0.5" height="15.0" fill="rgb(223,152,16)" rx="2" ry="2" />
+<text  x="987.36" y="367.5" ></text>
+</g>
+<g >
+<title>Foundation.Data.withUnsafeBytes&lt;A&gt;((Swift.UnsafeRawBufferPointer) throws -&gt; A) throws -&gt; A (1 samples, 0.04%)</title><rect x="1181.4" y="533" width="0.5" height="15.0" fill="rgb(235,197,18)" rx="2" ry="2" />
+<text  x="1184.37" y="543.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;[Swift.Int]&gt; of protocol witness for Swift.IteratorProtocol.next() -&gt; A.Element? in conformance Swift.IndexingIterator&lt;A&gt; : Swift.IteratorProtocol in Swift (3 samples, 0.13%)</title><rect x="835.6" y="469" width="1.5" height="15.0" fill="rgb(214,20,48)" rx="2" ry="2" />
+<text  x="838.59" y="479.5" ></text>
+</g>
+<g >
+<title>xas_start (1 samples, 0.04%)</title><rect x="934.6" y="261" width="0.5" height="15.0" fill="rgb(231,215,0)" rx="2" ry="2" />
+<text  x="937.60" y="271.5" ></text>
+</g>
+<g >
+<title>swift::MetadataCacheEntryBase&lt;(anonymous namespace)::GenericCacheEntry, void const*&gt;::awaitSatisfyingState (1 samples, 0.04%)</title><rect x="22.2" y="501" width="0.5" height="15.0" fill="rgb(213,211,54)" rx="2" ry="2" />
+<text  x="25.19" y="511.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.UnsafeMutablePointer.initialize(from: Swift.UnsafePointer&lt;A&gt;, count: Swift.Int) -&gt; () (1 samples, 0.04%)</title><rect x="640.1" y="389" width="0.5" height="15.0" fill="rgb(219,94,53)" rx="2" ry="2" />
+<text  x="643.11" y="399.5" ></text>
+</g>
+<g >
+<title>add_timer_randomness (1 samples, 0.04%)</title><rect x="853.9" y="229" width="0.5" height="15.0" fill="rgb(236,154,50)" rx="2" ry="2" />
+<text  x="856.87" y="239.5" ></text>
+</g>
+<g >
+<title>protocol witness for Swift.Hashable._rawHashValue(seed: Swift.Int) -&gt; Swift.Int in conformance Swift.String : Swift.Hashable in Swift (7 samples, 0.30%)</title><rect x="840.2" y="437" width="3.5" height="15.0" fill="rgb(207,115,4)" rx="2" ry="2" />
+<text  x="843.16" y="447.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.04%)</title><rect x="1183.4" y="485" width="0.5" height="15.0" fill="rgb(225,215,20)" rx="2" ry="2" />
+<text  x="1186.40" y="495.5" ></text>
+</g>
+<g >
+<title>lockref_put_return (1 samples, 0.04%)</title><rect x="855.4" y="325" width="0.5" height="15.0" fill="rgb(214,134,43)" rx="2" ry="2" />
+<text  x="858.40" y="335.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (2 samples, 0.09%)</title><rect x="1097.1" y="389" width="1.0" height="15.0" fill="rgb(219,77,16)" rx="2" ry="2" />
+<text  x="1100.08" y="399.5" ></text>
+</g>
+<g >
+<title>__free (8 samples, 0.34%)</title><rect x="604.1" y="421" width="4.0" height="15.0" fill="rgb(216,185,8)" rx="2" ry="2" />
+<text  x="607.06" y="431.5" ></text>
+</g>
+<g >
+<title>lazy protocol witness table accessor for type (extension in Foundation):Swift.String.Encoding and conformance (extension in Foundation):Swift.String.Encoding : Swift.RawRepresentable in Foundation (1 samples, 0.04%)</title><rect x="12.0" y="533" width="0.5" height="15.0" fill="rgb(249,184,39)" rx="2" ry="2" />
+<text  x="15.03" y="543.5" ></text>
+</g>
+<g >
+<title>Swift.Hasher._finalize() -&gt; Swift.Int (1 samples, 0.04%)</title><rect x="840.7" y="421" width="0.5" height="15.0" fill="rgb(223,66,26)" rx="2" ry="2" />
+<text  x="843.67" y="431.5" ></text>
+</g>
+<g >
+<title>malloc@plt (2 samples, 0.09%)</title><rect x="654.8" y="373" width="1.1" height="15.0" fill="rgb(248,113,48)" rx="2" ry="2" />
+<text  x="657.84" y="383.5" ></text>
+</g>
+<g >
+<title>Foundation.Data._Representation.init(Swift.UnsafeRawBufferPointer) -&gt; Foundation.Data._Representation (18 samples, 0.77%)</title><rect x="590.9" y="389" width="9.1" height="15.0" fill="rgb(253,118,29)" rx="2" ry="2" />
+<text  x="593.86" y="399.5" ></text>
+</g>
+<g >
+<title>rmqueue_bulk (1 samples, 0.04%)</title><rect x="945.8" y="261" width="0.5" height="15.0" fill="rgb(206,65,42)" rx="2" ry="2" />
+<text  x="948.77" y="271.5" ></text>
+</g>
+<g >
+<title>bio_add_page (1 samples, 0.04%)</title><rect x="952.9" y="277" width="0.5" height="15.0" fill="rgb(246,222,20)" rx="2" ry="2" />
+<text  x="955.88" y="287.5" ></text>
+</g>
+<g >
+<title>lru_add_fn (7 samples, 0.30%)</title><rect x="938.2" y="261" width="3.5" height="15.0" fill="rgb(247,65,37)" rx="2" ry="2" />
+<text  x="941.16" y="271.5" ></text>
+</g>
+<g >
+<title>main (2,319 samples, 99.78%)</title><rect x="10.0" y="581" width="1177.5" height="15.0" fill="rgb(248,163,9)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >main</text>
+</g>
+<g >
+<title>dispatch thunk of Swift.RawRepresentable.rawValue.getter : A.RawValue (3 samples, 0.13%)</title><rect x="582.2" y="469" width="1.6" height="15.0" fill="rgb(241,142,29)" rx="2" ry="2" />
+<text  x="585.23" y="479.5" ></text>
+</g>
+<g >
+<title>swift::RefCounts&lt;swift::RefCountBitsT&lt; (1 samples, 0.04%)</title><rect x="639.6" y="469" width="0.5" height="15.0" fill="rgb(237,36,34)" rx="2" ry="2" />
+<text  x="642.60" y="479.5" ></text>
+</g>
+<g >
+<title>__blk_mq_alloc_requests (1 samples, 0.04%)</title><rect x="956.4" y="245" width="0.5" height="15.0" fill="rgb(229,216,21)" rx="2" ry="2" />
+<text  x="959.44" y="255.5" ></text>
+</g>
+<g >
+<title>lru_gen_add_folio (5 samples, 0.22%)</title><rect x="939.2" y="245" width="2.5" height="15.0" fill="rgb(217,184,23)" rx="2" ry="2" />
+<text  x="942.17" y="255.5" ></text>
+</g>
+<g >
+<title>common_interrupt (1 samples, 0.04%)</title><rect x="907.2" y="277" width="0.5" height="15.0" fill="rgb(252,5,16)" rx="2" ry="2" />
+<text  x="910.19" y="287.5" ></text>
+</g>
+<g >
+<title>__do_sys_newfstatat (12 samples, 0.52%)</title><rect x="982.8" y="405" width="6.1" height="15.0" fill="rgb(233,120,11)" rx="2" ry="2" />
+<text  x="985.84" y="415.5" ></text>
+</g>
+<g >
+<title>ext4_sb_block_valid (2 samples, 0.09%)</title><rect x="954.9" y="245" width="1.0" height="15.0" fill="rgb(232,59,53)" rx="2" ry="2" />
+<text  x="957.91" y="255.5" ></text>
+</g>
+<g >
+<title>__swift_instantiateCanonicalPrespecializedGenericMetadata (3 samples, 0.13%)</title><rect x="14.1" y="533" width="1.5" height="15.0" fill="rgb(253,51,18)" rx="2" ry="2" />
+<text  x="17.06" y="543.5" ></text>
+</g>
+<g >
+<title>Foundation.Data._copyContents(initializing: Swift.UnsafeMutableBufferPointer&lt;Swift.UInt8&gt;) -&gt; (Foundation.Data.Iterator, Swift.Int) (39 samples, 1.68%)</title><rect x="619.8" y="453" width="19.8" height="15.0" fill="rgb(207,82,39)" rx="2" ry="2" />
+<text  x="622.80" y="463.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (9 samples, 0.39%)</title><rect x="650.3" y="373" width="4.5" height="15.0" fill="rgb(232,36,11)" rx="2" ry="2" />
+<text  x="653.27" y="383.5" ></text>
+</g>
+<g >
+<title>Swift.Hasher._finalize() -&gt; Swift.Int@plt (1 samples, 0.04%)</title><rect x="841.2" y="421" width="0.5" height="15.0" fill="rgb(213,198,30)" rx="2" ry="2" />
+<text  x="844.18" y="431.5" ></text>
+</g>
+<g >
+<title>swift::RefCounts&lt;swift::RefCountBitsT&lt; (26 samples, 1.12%)</title><rect x="1001.1" y="485" width="13.2" height="15.0" fill="rgb(229,49,11)" rx="2" ry="2" />
+<text  x="1004.12" y="495.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of Swift.Array.subscript.getter : (Swift.Range&lt;Swift.Int&gt;) -&gt; Swift.ArraySlice&lt;A&gt; (60 samples, 2.58%)</title><rect x="802.6" y="485" width="30.5" height="15.0" fill="rgb(248,59,30)" rx="2" ry="2" />
+<text  x="805.59" y="495.5" >ge..</text>
+</g>
+<g >
+<title>main (2,277 samples, 97.98%)</title><rect x="22.7" y="517" width="1156.1" height="15.0" fill="rgb(217,128,54)" rx="2" ry="2" />
+<text  x="25.69" y="527.5" >main</text>
+</g>
+<g >
+<title>_int_malloc (2 samples, 0.09%)</title><rect x="618.8" y="389" width="1.0" height="15.0" fill="rgb(242,114,45)" rx="2" ry="2" />
+<text  x="621.79" y="399.5" ></text>
+</g>
+<g >
+<title>__entry_text_start (1 samples, 0.04%)</title><rect x="991.0" y="357" width="0.5" height="15.0" fill="rgb(245,208,40)" rx="2" ry="2" />
+<text  x="993.96" y="367.5" ></text>
+</g>
+<g >
+<title>__ata_scsi_queuecmd (5 samples, 0.22%)</title><rect x="949.3" y="117" width="2.6" height="15.0" fill="rgb(224,21,44)" rx="2" ry="2" />
+<text  x="952.33" y="127.5" ></text>
+</g>
+<g >
+<title>__fstatat (1 samples, 0.04%)</title><rect x="844.7" y="437" width="0.5" height="15.0" fill="rgb(209,226,2)" rx="2" ry="2" />
+<text  x="847.73" y="447.5" ></text>
+</g>
+<g >
+<title>__read_end_io (1 samples, 0.04%)</title><rect x="1096.1" y="341" width="0.5" height="15.0" fill="rgb(251,93,1)" rx="2" ry="2" />
+<text  x="1099.07" y="351.5" ></text>
+</g>
+<g >
+<title>__memmove_sse2_unaligned_erms (18 samples, 0.77%)</title><rect x="970.7" y="405" width="9.1" height="15.0" fill="rgb(213,181,14)" rx="2" ry="2" />
+<text  x="973.65" y="415.5" ></text>
+</g>
+<g >
+<title>submit_bio_noacct_nocheck (1 samples, 0.04%)</title><rect x="956.4" y="277" width="0.5" height="15.0" fill="rgb(222,153,32)" rx="2" ry="2" />
+<text  x="959.44" y="287.5" ></text>
+</g>
+<g >
+<title>_dl_map_object_deps (1 samples, 0.04%)</title><rect x="1178.8" y="501" width="0.5" height="15.0" fill="rgb(252,55,10)" rx="2" ry="2" />
+<text  x="1181.83" y="511.5" ></text>
+</g>
+<g >
+<title>ext4_map_blocks (2 samples, 0.09%)</title><rect x="954.9" y="277" width="1.0" height="15.0" fill="rgb(232,0,50)" rx="2" ry="2" />
+<text  x="957.91" y="287.5" ></text>
+</g>
+<g >
+<title>[[heap]] (4 samples, 0.17%)</title><rect x="10.0" y="565" width="2.0" height="15.0" fill="rgb(234,48,4)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" ></text>
+</g>
+<g >
+<title>check_preemption_disabled (1 samples, 0.04%)</title><rect x="966.6" y="341" width="0.5" height="15.0" fill="rgb(244,115,38)" rx="2" ry="2" />
+<text  x="969.59" y="351.5" ></text>
+</g>
+<g >
+<title>folio_add_lru (11 samples, 0.47%)</title><rect x="936.1" y="293" width="5.6" height="15.0" fill="rgb(211,92,39)" rx="2" ry="2" />
+<text  x="939.13" y="303.5" ></text>
+</g>
+<g >
+<title>xas_descend (2 samples, 0.09%)</title><rect x="932.6" y="245" width="1.0" height="15.0" fill="rgb(224,62,6)" rx="2" ry="2" />
+<text  x="935.57" y="255.5" ></text>
+</g>
+<g >
+<title>update_process_times (1 samples, 0.04%)</title><rect x="937.7" y="133" width="0.5" height="15.0" fill="rgb(232,177,36)" rx="2" ry="2" />
+<text  x="940.65" y="143.5" ></text>
+</g>
+<g >
+<title>(extension in Foundation):Swift.String.init(data: __shared Foundation.Data, encoding: (extension in Foundation):Swift.String.Encoding) -&gt; Swift.String? (42 samples, 1.81%)</title><rect x="562.4" y="485" width="21.4" height="15.0" fill="rgb(223,192,47)" rx="2" ry="2" />
+<text  x="565.43" y="495.5" >(..</text>
+</g>
+<g >
+<title>asm_common_interrupt (1 samples, 0.04%)</title><rect x="853.9" y="341" width="0.5" height="15.0" fill="rgb(213,193,22)" rx="2" ry="2" />
+<text  x="856.87" y="351.5" ></text>
+</g>
+<g >
+<title>swift_getCanonicalPrespecializedGenericMetadata (1 samples, 0.04%)</title><rect x="15.1" y="517" width="0.5" height="15.0" fill="rgb(208,1,25)" rx="2" ry="2" />
+<text  x="18.08" y="527.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (12 samples, 0.52%)</title><rect x="982.8" y="437" width="6.1" height="15.0" fill="rgb(249,44,9)" rx="2" ry="2" />
+<text  x="985.84" y="447.5" ></text>
+</g>
+<g >
+<title>ehci_irq (1 samples, 0.04%)</title><rect x="1170.2" y="357" width="0.5" height="15.0" fill="rgb(224,4,12)" rx="2" ry="2" />
+<text  x="1173.20" y="367.5" ></text>
+</g>
+<g >
+<title>__fsnotify_parent (11 samples, 0.47%)</title><rect x="851.8" y="357" width="5.6" height="15.0" fill="rgb(247,166,30)" rx="2" ry="2" />
+<text  x="854.84" y="367.5" ></text>
+</g>
+<g >
+<title>protocol witness for static Swift.Equatable.== infix(A, A) -&gt; Swift.Bool in conformance Swift.String : Swift.Equatable in Swift (1 samples, 0.04%)</title><rect x="843.7" y="437" width="0.5" height="15.0" fill="rgb(242,209,50)" rx="2" ry="2" />
+<text  x="846.72" y="447.5" ></text>
+</g>
+<g >
+<title>@nonobjc __C.read(Swift.Int32, Swift.UnsafeMutableRawPointer?, Swift.Int) -&gt; Swift.Int (243 samples, 10.46%)</title><rect x="844.7" y="453" width="123.4" height="15.0" fill="rgb(232,148,29)" rx="2" ry="2" />
+<text  x="847.73" y="463.5" >@nonobjc __C.re..</text>
+</g>
+<g >
+<title>__libc_start_call_main (2,277 samples, 97.98%)</title><rect x="22.7" y="533" width="1156.1" height="15.0" fill="rgb(252,223,38)" rx="2" ry="2" />
+<text  x="25.69" y="543.5" >__libc_start_call_main</text>
+</g>
+<g >
+<title>blk_mq_sched_dispatch_requests (8 samples, 0.34%)</title><rect x="947.8" y="213" width="4.1" height="15.0" fill="rgb(207,117,0)" rx="2" ry="2" />
+<text  x="950.81" y="223.5" ></text>
+</g>
+<g >
+<title>__irq_exit_rcu (1 samples, 0.04%)</title><rect x="967.1" y="309" width="0.5" height="15.0" fill="rgb(209,178,24)" rx="2" ry="2" />
+<text  x="970.10" y="319.5" ></text>
+</g>
+<g >
+<title>generic specialization &lt;Swift.UInt8&gt; of protocol witness for Swift.Sequence._copyContents(initializing: Swift.UnsafeMutableBufferPointer&lt;A.Element&gt;) -&gt; (A.Iterator, Swift.Int) in conformance Swift.ArraySlice&lt;A&gt; : Swift.Sequence in Swift (1 samples, 0.04%)</title><rect x="640.1" y="421" width="0.5" height="15.0" fill="rgb(237,8,4)" rx="2" ry="2" />
+<text  x="643.11" y="431.5" ></text>
+</g>
+<g >
+<title>page_counter_try_charge (2 samples, 0.09%)</title><rect x="927.0" y="229" width="1.0" height="15.0" fill="rgb(235,229,46)" rx="2" ry="2" />
+<text  x="929.99" y="239.5" ></text>
+</g>
+<g >
+<title>swift_retain@plt (14 samples, 0.60%)</title><rect x="1171.7" y="485" width="7.1" height="15.0" fill="rgb(224,129,21)" rx="2" ry="2" />
+<text  x="1174.72" y="495.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (5 samples, 0.22%)</title><rect x="1187.5" y="549" width="2.5" height="15.0" fill="rgb(240,15,29)" rx="2" ry="2" />
+<text  x="1190.46" y="559.5" ></text>
+</g>
+<g >
+<title>blk_mq_sched_insert_requests (9 samples, 0.39%)</title><rect x="947.8" y="245" width="4.6" height="15.0" fill="rgb(254,192,21)" rx="2" ry="2" />
+<text  x="950.81" y="255.5" ></text>
+</g>
+<g >
+<title>psi_task_switch (1 samples, 0.04%)</title><rect x="921.4" y="261" width="0.5" height="15.0" fill="rgb(207,10,31)" rx="2" ry="2" />
+<text  x="924.40" y="271.5" ></text>
+</g>
+<g >
+<title>__count_memcg_events (1 samples, 0.04%)</title><rect x="926.5" y="229" width="0.5" height="15.0" fill="rgb(246,112,16)" rx="2" ry="2" />
+<text  x="929.48" y="239.5" ></text>
+</g>
+</g>
+</svg>
